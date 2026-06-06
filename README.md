@@ -1,16 +1,15 @@
 # MOCE SDK CH32
 
-MOCE SDK CH32 is a small CH32V203-oriented SDK framework modeled after the
-MOCE STM32 SDK style. It targets WCH CH32 standard peripheral library
-development, not HAL.
+MOCE SDK CH32 是一个面向 CH32V203 的轻量级 SDK 框架，整体风格参考
+MOCE STM32 SDK。该工程面向 WCH CH32 标准外设库开发，不使用 HAL。
 
-The default board is:
+默认开发板为：
 
 ```text
 ch32v203g6u6
 ```
 
-## Repository Layout
+## 仓库结构
 
 ```text
 boards/                 Board startup, clock, pins, GPIO, UART
@@ -26,9 +25,9 @@ third_party/            Downloaded WCH SDK location
 tools/                  Downloaded toolchain/flash tools location
 ```
 
-## Windows Setup
+## Windows 环境准备
 
-Install these host tools first:
+请先安装以下主机工具：
 
 ```text
 Git for Windows
@@ -37,13 +36,13 @@ CMake
 Ninja
 ```
 
-Then run:
+然后运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
 ```
 
-The setup script downloads or clones:
+该 setup 脚本会下载或克隆：
 
 ```text
 tools/xpack-riscv-none-elf-gcc-15.2.0-1/
@@ -51,48 +50,48 @@ third_party/ch32v20x_repo/
 tools/ch32fun/
 ```
 
-These generated/downloaded folders are intentionally ignored by Git.
+这些自动下载生成的目录已经在 Git 中忽略，不会提交到仓库。
 
-## Build
+## 编译
 
-Build an example:
+编译一个 example：
 
 ```powershell
 python scripts\build.py --board ch32v203g6u6 --app led_blink
 ```
 
-Other examples:
+其他 example：
 
 ```powershell
 python scripts\build.py --board ch32v203g6u6 --app mpu6050_readout
 python scripts\build.py --board ch32v203g6u6 --app vl53l0x_readout
 ```
 
-The build output is placed under:
+编译产物会生成到：
 
 ```text
 build/<board>/<app>/
 ```
 
-## Flash
+## 烧录
 
-After building `led_blink`, flash it with:
+编译 `led_blink` 后，可以使用下面的命令烧录：
 
 ```powershell
 tools\ch32fun\minichlink\minichlink.exe -w build\ch32v203g6u6\led_blink\examples\led_blink\led_blink.bin flash -b
 ```
 
-For another app, replace the app name in the path. For example:
+如果要烧录其他 app，请替换路径中的 app 名称。例如：
 
 ```powershell
 tools\ch32fun\minichlink\minichlink.exe -w build\ch32v203g6u6\mpu6050_readout\examples\mpu6050_readout\mpu6050_readout.bin flash -b
 ```
 
-## Supported Board
+## 支持的开发板
 
 ### CH32V203G6U6
 
-Current board-level peripheral mapping:
+当前开发板外设引脚映射：
 
 ```text
 UART1 TX: PA9
@@ -107,9 +106,9 @@ CAN RX  : PA11
 CAN TX  : PA12
 ```
 
-## Adding A New Peripheral
+## 添加新的外设
 
-Recommended structure:
+推荐按下面的结构添加：
 
 ```text
 components/mcu_port/    MCU-level protocol helpers, if needed
@@ -117,7 +116,7 @@ components/bsp/         Device driver, board-aware BSP
 examples/<name>/        Minimal serial-printing example
 ```
 
-For I2C sensors, prefer a conservative first version:
+对于 I2C 传感器，建议先写一个保守、容易调试的版本：
 
 ```text
 1. Check device address ACK.
@@ -127,12 +126,12 @@ For I2C sensors, prefer a conservative first version:
 5. Print raw and scaled values over UART.
 ```
 
-For custom boards/modules, document power, pullups, address pins, and known
-read timing quirks in `docs/` or in the example README.
+对于自画板或自画模块，建议在 `docs/` 或 example 的 README 中记录供电、
+上拉电阻、地址选择脚以及已知的读写时序问题。
 
-## GitHub Workflow
+## GitHub 工作流
 
-This repository is designed for the following workflow:
+本仓库建议使用下面的 GitHub 工作流：
 
 ```powershell
 git init
@@ -143,19 +142,18 @@ git remote add origin https://github.com/<your-name>/MOCE_SDK_CH32.git
 git push -u origin main
 ```
 
-The `.gitignore` keeps build products, downloaded SDKs, and downloaded
-toolchains out of the repository. A fresh clone can restore them by running
-`scripts\setup_windows.ps1`.
+`.gitignore` 会将编译产物、下载的 SDK 和下载的工具链排除在仓库之外。
+新的 clone 可以通过运行 `scripts\setup_windows.ps1` 恢复这些依赖。
 
-## Troubleshooting
+## 常见问题
 
-If CMake cannot find `riscv-none-elf-gcc`, run setup again:
+如果 CMake 找不到 `riscv-none-elf-gcc`，请重新运行 setup：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
 ```
 
-If flashing fails, check:
+如果烧录失败，请检查：
 
 ```text
 WCH-LinkE driver is installed
@@ -164,7 +162,7 @@ Target board is powered
 No serial/debug tool is holding the device
 ```
 
-If `minichlink.exe` is missing, build or reinstall ch32fun:
+如果缺少 `minichlink.exe`，可以重新构建或重新安装 ch32fun：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1 -SkipToolchain -SkipSdk -Force
