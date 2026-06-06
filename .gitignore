@@ -1,0 +1,39 @@
+# Build outputs
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.o
+*.obj
+*.a
+*.d
+
+# Editor and OS files
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+
+# Downloaded toolchains and SDKs
+tools/xpack-riscv-none-elf-gcc-*/
+tools/*.zip
+tools/*.7z
+tools/*.tar.gz
+third_party/ch32v20x_repo/
+third_party/ch32v20x/
+third_party/*.zip
+third_party/*.7z
+third_party/*.tar.gz
+
+# Flash/debug helper repos fetched by setup
+tools/ch32fun/
+tools/node_modules/
+tools/package-lock.json
+
+# Local notes
+.claude/
