@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # MOCE SDK CH32
 
 MOCE SDK CH32 is a small CH32V203-oriented SDK framework modeled after the
@@ -170,7 +169,3 @@ If `minichlink.exe` is missing, build or reinstall ch32fun:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1 -SkipToolchain -SkipSdk -Force
 ```
-=======
-# MOCE_SDK_CH32
-CH32
->>>>>>> 6b471d8e3ac5b963454767a61c747ef78a5accf9
