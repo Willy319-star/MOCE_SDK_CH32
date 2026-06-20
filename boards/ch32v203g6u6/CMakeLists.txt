@@ -15,8 +15,10 @@ add_library(board_ch32v203g6u6 STATIC
     ${CH32_DEBUG_DIR}/debug.c
 
     ${CH32_PERIPHERAL_SRC_DIR}/ch32v20x_gpio.c
+    ${CH32_PERIPHERAL_SRC_DIR}/ch32v20x_can.c
     ${CH32_PERIPHERAL_SRC_DIR}/ch32v20x_i2c.c
     ${CH32_PERIPHERAL_SRC_DIR}/ch32v20x_rcc.c
+    ${CH32_PERIPHERAL_SRC_DIR}/ch32v20x_spi.c
     ${CH32_PERIPHERAL_SRC_DIR}/ch32v20x_usart.c
     ${CH32_PERIPHERAL_SRC_DIR}/ch32v20x_misc.c
 )

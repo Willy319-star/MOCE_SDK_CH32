@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ch32v20x_adc.h"
+#include "ch32v20x_can.h"
 #include "ch32v20x_dma.h"
 #include "ch32v20x_exti.h"
 #include "ch32v20x_flash.h"
