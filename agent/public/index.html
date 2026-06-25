@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MOCE Designer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="left-rail">
+        <div class="brand">
+          <div class="brand-mark">M</div>
+          <div>
+            <h1>MOCE Designer</h1>
+            <p>硬件产品开发工作台</p>
+          </div>
+        </div>
+
+        <section class="rail-section">
+          <div class="rail-head">
+            <h2>流程</h2>
+            <span id="flowSummary">0 / 7</span>
+          </div>
+          <nav class="step-list" id="steps"></nav>
+        </section>
+
+        <section class="rail-section">
+          <div class="rail-head">
+            <h2>项目</h2>
+          </div>
+          <div class="field-stack compact">
+            <label>
+              工程名
+              <input id="projectName" value="robot_agent_app" />
+            </label>
+            <div class="two-col">
+              <label>
+                Target
+                <input id="targetName" value="ch32" />
+              </label>
+              <label>
+                Port
+                <input id="portName" value="" placeholder="由本地 agent 自动选择" />
+              </label>
+            </div>
+            <label>
+              Board
+              <input id="boardName" value="ch32v203g6u6" />
+            </label>
+          </div>
+        </section>
+      </aside>
+
+      <main class="main-stage">
+        <header class="topbar">
+          <div>
+            <h2>机器人 / 智能硬件设计</h2>
+            <p id="healthLine">正在连接本地 agent...</p>
+          </div>
+          <div class="top-actions">
+            <span class="model-chip" id="modelChip">Model: 未连接</span>
+            <button id="scanBtn">扫描 SDK</button>
+            <button id="saveBtn">保存会话</button>
+          </div>
+        </header>
+
+        <section class="requirement-band">
+          <div class="section-title">
+            <div>
+              <h3>产品需求</h3>
+              <p>手动描述产品形态，或从 prompt/ 读取开发需求；prompt0.md 默认全局生效。</p>
+            </div>
+          </div>
+          <div class="prompt-source">
+            <label>
+              需求文档
+              <select id="promptPath">
+                <option value="">扫描 prompt/ 中...</option>
+              </select>
+            </label>
+            <button id="loadPromptBtn" type="button">读取文档</button>
+            <span id="promptStatus">prompt/</span>
+          </div>
+          <textarea id="requirement" spellcheck="false" placeholder="例如：做一个 ESP32-S3 桌面避障小车，支持 VL53L0X ToF 测距、两个舵机、OLED 显示状态、按键切换模式，并通过 WiFi 接入上位机测试。"></textarea>
+          <div class="action-row">
+            <button class="primary" id="analysisBtn">功能分析</button>
+            <button id="componentSelectionBtn" disabled>器件选型</button>
+            <button id="resourcePlanBtn" disabled>硬件资源规划</button>
+            <button id="hardwareBuildBtn" disabled>硬件搭建</button>
+            <button id="codeBtn" disabled>嵌入式开发：固件草稿</button>
+            <button id="writeBtn" disabled>写入文件</button>
+            <button id="buildBtn" disabled>测试调试：Build</button>
+            <button id="flashBtn" disabled>测试调试：Flash</button>
+            <button id="monitorBtn" disabled>测试调试：Monitor 诊断 15s</button>
+          </div>
+          <div id="analysisDecision" class="decision-row hidden">
+            <span id="analysisDecisionText">功能分析完成，请选择下一步。</span>
+            <button class="primary" id="acceptAnalysisBtn" type="button">接受</button>
+          </div>
+          <div id="analysisRefinementPanel" class="analysis-refinement hidden">
+            <label>
+              进一步细化需求
+              <textarea id="analysisRefinement" spellcheck="false" placeholder="例如：补充按键短按/长按行为、需要显示的状态、传感器型号、验收方式等。"></textarea>
+            </label>
+            <div class="action-row compact-actions">
+              <button id="rerunAnalysisBtn" type="button">再次功能分析</button>
+            </div>
+          </div>
+          <div id="componentSelectionDecision" class="decision-row hidden">
+            <span id="componentSelectionDecisionText">器件选型完成，请选择下一步。</span>
+            <button class="primary" id="acceptComponentSelectionBtn" type="button">接受</button>
+          </div>
+          <div id="componentSelectionRefinementPanel" class="analysis-refinement hidden">
+            <label>
+              调整器件选型要求
+              <textarea id="componentSelectionNotes" spellcheck="false" placeholder="例如：换成更便宜的 OLED、优先使用 3.3V 模块、指定某个传感器型号、限制成本或尺寸等。"></textarea>
+            </label>
+            <div class="action-row compact-actions">
+              <button id="rerunComponentSelectionBtn" type="button">再次检索</button>
+            </div>
+          </div>
+          <div id="resourcePlanDecision" class="decision-row hidden">
+            <span id="resourcePlanDecisionText">硬件资源规划完成，请选择下一步。</span>
+            <button class="primary" id="acceptResourcePlanBtn" type="button">接受</button>
+          </div>
+          <div id="resourcePlanRefinementPanel" class="analysis-refinement hidden">
+            <label>
+              调整资源规划要求
+              <textarea id="resourcePlanNotes" spellcheck="false" placeholder="例如：避开 GPIO0、OLED 和 ToF 共用 I2C、舵机改用指定 PWM 引脚、UART 不占用日志串口等。"></textarea>
+            </label>
+            <div class="action-row compact-actions">
+              <button id="rerunResourcePlanBtn" type="button">再次规划</button>
+            </div>
+          </div>
+        </section>
+
+        <nav class="view-tabs">
+          <button class="tab active" data-tab="overview">流程总览</button>
+          <button class="tab" data-tab="analysis">功能分析</button>
+          <button class="tab" data-tab="selection">器件选型</button>
+          <button class="tab" data-tab="resources">硬件资源规划</button>
+          <button class="tab" data-tab="plan">硬件搭建</button>
+          <button class="tab" data-tab="code">嵌入式开发</button>
+          <button class="tab" data-tab="sdk">测试调试</button>
+          <button class="tab" data-tab="feedback">实现反馈</button>
+        </nav>
+
+        <section class="view active" id="tab-overview">
+          <div class="summary-grid">
+            <article class="summary-card">
+              <h4>功能分析</h4>
+              <p id="analysisSummary">尚未进行功能分析。</p>
+            </article>
+            <article class="summary-card">
+              <h4>器件选型</h4>
+              <p id="componentSelectionSummary">尚未进行器件选型。</p>
+            </article>
+            <article class="summary-card">
+              <h4>硬件资源规划</h4>
+              <p id="resourcePlanSummary">尚未进行硬件资源规划。</p>
+            </article>
+            <article class="summary-card">
+              <h4>硬件搭建</h4>
+              <p id="planSummary">尚未生成硬件搭建文档。</p>
+            </article>
+            <article class="summary-card">
+              <h4>硬件覆盖</h4>
+              <div id="hardwareCoverage" class="pill-row"></div>
+            </article>
+            <article class="summary-card">
+              <h4>嵌入式开发</h4>
+              <p id="codeSummary">尚未生成代码。</p>
+            </article>
+            <article class="summary-card">
+              <h4>实现反馈</h4>
+              <p id="feedbackSummary">等待调试后反馈实现差异。</p>
+            </article>
+          </div>
+          <div class="section-grid">
+            <section class="work-card">
+              <div class="card-head">
+                <h3>功能分析</h3>
+                <span id="analysisMeta">等待确认</span>
+              </div>
+              <div id="analysisPreview" class="markdown-body compact-preview empty">等待功能分析。</div>
+              <div class="card-actions">
+                <button type="button" data-jump-tab="analysis">查看全文</button>
+              </div>
+            </section>
+            <section class="work-card">
+              <div class="card-head">
+                <h3>状态机状态转移图</h3>
+                <span>功能逻辑预览</span>
+              </div>
+              <div id="stateMachinePreview" class="diagram-canvas empty state-machine-canvas">等待功能分析。</div>
+            </section>
+            <section class="work-card">
+              <div class="card-head">
+                <h3>硬件框图预览</h3>
+                <span>连接关系预览</span>
+              </div>
+              <div id="diagramPreview" class="diagram-canvas empty">等待生成框图。</div>
+            </section>
+            <section class="work-card">
+              <div class="card-head">
+                <h3>器件选型</h3>
+                <span id="componentSelectionMeta">等待确认</span>
+              </div>
+              <div id="componentSelectionPreview" class="markdown-body compact-preview empty">等待器件选型。</div>
+              <div class="card-actions">
+                <button type="button" data-jump-tab="selection">查看全文</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="tab-analysis">
+          <section class="work-card reading-card">
+            <div class="card-head">
+              <h3>状态机状态转移图</h3>
+              <span>Mermaid 渲染</span>
+            </div>
+            <div id="stateMachineDiagram" class="diagram-canvas empty state-machine-canvas">等待功能分析。</div>
+          </section>
+          <section class="work-card reading-card">
+            <div class="card-head">
+              <h3>功能分析全文</h3>
+              <span id="analysisFullMeta">等待确认</span>
+            </div>
+            <div id="analysisOutput" class="markdown-body reading-body empty">等待功能分析。</div>
+          </section>
+        </section>
+
+        <section class="view" id="tab-selection">
+          <section class="work-card reading-card">
+            <div class="card-head">
+              <h3>器件选型全文</h3>
+              <span id="componentSelectionFullMeta">等待确认</span>
+            </div>
+            <div id="componentSelectionOutput" class="markdown-body reading-body empty">等待器件选型。</div>
+          </section>
+        </section>
+
+        <section class="view" id="tab-plan">
+          <section class="work-card">
+            <div class="card-head">
+              <h3>模块连接框图</h3>
+              <span id="planMeta">等待生成</span>
+            </div>
+            <div id="diagramGrid" class="diagram-canvas empty">等待生成框图。</div>
+          </section>
+          <section class="work-card hardware-details">
+            <div class="card-head">
+              <h3>接线与检查</h3>
+              <span>搭建详情</span>
+            </div>
+            <div id="planOutput" class="markdown-body empty">等待生成硬件搭建文档。</div>
+          </section>
+        </section>
+
+        <section class="view" id="tab-resources">
+          <section class="work-card">
+            <div class="card-head">
+              <h3>硬件资源规划</h3>
+              <span id="resourceMeta">来自规划或板级定义</span>
+            </div>
+            <div id="resourcePlanOutput" class="markdown-body reading-body empty">等待硬件资源规划。</div>
+            <div id="resourceTable" class="resource-table empty">等待生成资源表。</div>
+          </section>
+        </section>
+
+        <section class="view" id="tab-code">
+          <section class="work-card">
+            <div class="card-head">
+              <h3>嵌入式开发：固件草稿</h3>
+              <span id="codeStatus">尚未生成代码。</span>
+            </div>
+            <div class="code-toolbar">
+              <span>确认硬件搭建和资源规划后生成。</span>
+              <button id="runCodeBtn" type="button" disabled>开始生成固件草稿</button>
+            </div>
+            <div class="code-layout">
+              <div id="fileTree" class="file-tree empty">等待生成文件。</div>
+              <article class="code-preview">
+                <h4 id="selectedFileTitle">未选择文件</h4>
+                <pre id="selectedFileContent">生成代码后，在左侧选择文件查看。</pre>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="tab-sdk">
+          <div class="section-grid debug-layout">
+            <section class="work-card debug-card">
+              <div class="card-head">
+                <h3>测试调试输出</h3>
+                <span>Build / Flash / Monitor</span>
+              </div>
+              <div class="monitor-toolbar">
+                <span id="monitorStatus" class="monitor-status">未连接</span>
+                <div class="monitor-actions">
+                  <button id="runBuildBtn" type="button" disabled>开始 Build</button>
+                  <button id="runFlashBtn" type="button" disabled>开始烧写</button>
+                  <button id="disconnectMonitorBtn" type="button" disabled>断开连接</button>
+                </div>
+              </div>
+              <div class="tool-output-grid">
+                <section class="tool-output-panel error-panel">
+                  <h4>报错信息</h4>
+                  <pre id="toolErrorOutput" class="tool-output error-output">尚未提取错误。</pre>
+                </section>
+                <section class="tool-output-panel log-panel">
+                  <h4>运行日志</h4>
+                  <pre id="toolLogOutput" class="tool-output log-output">尚未运行工具。</pre>
+                </section>
+              </div>
+              <div class="debug-fix-panel">
+                <div class="card-head">
+                  <h3>Agent 自动修复</h3>
+                  <button id="debugFixBtn" type="button" disabled>自动诊断修复</button>
+                </div>
+                <div id="debugFixOutput" class="validation-list empty">等待 Build / Flash / Monitor 失败输出。</div>
+              </div>
+              <div class="pid-panel">
+                <div class="card-head">
+                  <h3>PID 调试工具</h3>
+                  <span id="pidTuneStatus">未运行</span>
+                </div>
+                <div class="pid-grid">
+                  <label class="wide-field">
+                    串口
+                    <select id="pidPortSelect"></select>
+                  </label>
+                  <label class="wide-field">
+                    手动串口
+                    <input id="pidPortManual" value="" placeholder="例如 /dev/ttyUSB0 或 COM3" />
+                  </label>
+                  <label>
+                    Baud
+                    <input id="pidBaud" value="115200" inputmode="numeric" />
+                  </label>
+                  <label>
+                    目标速度
+                    <input id="pidSetpoint" value="100" inputmode="decimal" />
+                  </label>
+                  <label>
+                    输入偏置
+                    <input id="pidBias" value="0" inputmode="decimal" />
+                  </label>
+                  <label>
+                    继电幅值
+                    <input id="pidRelay" value="30" inputmode="decimal" />
+                  </label>
+                  <label>
+                    时长 s
+                    <input id="pidDuration" value="30" inputmode="numeric" />
+                  </label>
+                  <label>
+                    采样 ms
+                    <input id="pidSampleMs" value="100" inputmode="numeric" />
+                  </label>
+                  <label class="wide-field">
+                    发送模板
+                    <input id="pidCommandTemplate" value="LOOP {value_int}" />
+                  </label>
+                  <label class="wide-field">
+                    速度正则
+                    <input id="pidSpeedRegex" value="speed[:=]\s*(?P&lt;speed&gt;-?\d+(?:\.\d+)?)" />
+                  </label>
+                </div>
+                <div class="action-row compact-actions">
+                  <button id="pidPortRefreshBtn" type="button">刷新串口</button>
+                  <button id="pidTuneStartBtn" type="button">启动 PI 自整定</button>
+                  <button id="pidTuneStopBtn" type="button" disabled>停止</button>
+                </div>
+                <div class="pid-result-grid">
+                  <pre id="pidTuneResult" class="pid-result">等待自整定结果。</pre>
+                  <pre id="pidTuneLog" class="pid-log">等待串口样本。</pre>
+                </div>
+              </div>
+              <div class="exec-panel">
+                <div class="exec-grid">
+                  <label>
+                    Program / file
+                    <input id="execCommand" value="node" autocomplete="off" />
+                  </label>
+                  <label>
+                    Arguments
+                    <input id="execArgs" value="--version" autocomplete="off" />
+                  </label>
+                  <label>
+                    CWD
+                    <input id="execCwd" value="." autocomplete="off" />
+                  </label>
+                </div>
+                <div class="action-row compact-actions">
+                  <button id="execBtn">Run</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="tab-feedback">
+          <section class="work-card reading-card">
+            <div class="card-head">
+              <h3>实现情况反馈</h3>
+              <span id="feedbackMeta">等待反馈</span>
+            </div>
+            <div class="analysis-refinement">
+              <label>
+                进一步细化功能要求
+                <textarea id="implementationFeedback" spellcheck="false" placeholder="例如：当前固件能编译和烧写，但没有按键切换模式；电机启动太快，需要分三档速度；OLED 需要显示 TOF 距离和状态，而不是只打印日志。"></textarea>
+              </label>
+              <div class="action-row compact-actions">
+                <button id="applyFeedbackBtn" type="button" disabled>根据反馈重新生成固件</button>
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+
+      <aside class="right-rail">
+        <section class="side-card">
+          <div class="card-head">
+            <h3>模型设置</h3>
+            <span id="providerStatus">未连接</span>
+          </div>
+          <div class="field-stack">
+            <label>
+              Provider
+              <select id="providerName"></select>
+            </label>
+            <label>
+              Model
+              <input id="modelName" autocomplete="off" />
+            </label>
+            <label>
+              Base URL
+              <input id="baseUrl" autocomplete="off" />
+            </label>
+            <label>
+              API Key
+              <input id="apiKey" type="password" autocomplete="off" placeholder="optional / env" />
+            </label>
+            <label class="inline">
+              <input id="useLlm" type="checkbox" checked />
+              Use LLM
+            </label>
+          </div>
+        </section>
+
+        <section class="side-card">
+          <div class="card-head">
+            <h3>代码校验</h3>
+            <span id="validationBadge">未生成</span>
+          </div>
+          <div id="validationPanel" class="validation-list empty">等待代码生成。</div>
+        </section>
+
+        <section class="side-card memory-card">
+          <div class="card-head">
+            <h3>记忆 / 历史</h3>
+            <span id="memoryMeta">未保存</span>
+          </div>
+          <label class="inline memory-toggle">
+            <input id="autosaveToggle" type="checkbox" checked />
+            自动保存
+          </label>
+          <div class="memory-actions">
+            <button id="refreshSessionsBtn" type="button">刷新</button>
+            <button id="deleteSessionBtn" type="button" disabled>删除会话</button>
+            <button id="clearTimelineBtn" type="button" disabled>清空历史</button>
+          </div>
+          <div class="memory-section">
+            <h4>会话</h4>
+            <div id="sessionList" class="memory-list empty">暂无会话。</div>
+          </div>
+          <div class="memory-section">
+            <h4>时间线</h4>
+            <div id="timelineList" class="memory-list empty">暂无历史事件。</div>
+          </div>
+        </section>
+
+        <section class="side-card chat-card">
+          <div class="card-head">
+            <h3>Q&A</h3>
+            <span>基于当前硬件上下文</span>
+          </div>
+          <div class="chat-log" id="chatLog"></div>
+          <div class="chat-box">
+            <input id="question" placeholder="询问资源、接口、测试..." />
+            <button id="askBtn">发送</button>
+          </div>
+        </section>
+
+        <section class="side-card">
+          <div class="card-head">
+            <h3>活动日志</h3>
+            <span id="logCount">0</span>
+          </div>
+          <div id="activityLog" class="activity-log"></div>
+        </section>
+
+        <section class="side-card">
+          <div class="card-head">
+            <h3>Physical</h3>
+            <span>占位接口</span>
+          </div>
+          <pre id="physicalOutput">等待连接。</pre>
+        </section>
+      </aside>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

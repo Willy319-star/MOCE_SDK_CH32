@@ -1,0 +1,18 @@
+{
+  "name": "moce-hardware-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Web agent for Moce SDK robot and smart hardware development workflows.",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --use-env-proxy server/index.js",
+    "dev": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --use-env-proxy server/index.js",
+    "check": "node --check server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "mermaid": "^11.12.2"
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "host": "127.0.0.1",
+  "port": 4173,
+  "defaultProvider": "openai",
+  "execution": {
+    "enabled": true,
+    "defaultCwd": ".",
+    "timeoutMs": 30000,
+    "maxTimeoutMs": 300000,
+    "maxOutputBytes": 200000,
+    "allowedPrograms": [
+      "bash",
+      "cmd",
+      "node",
+      "npm",
+      "npx",
+      "powershell",
+      "pwsh",
+      "python",
+      "python3",
+      "py",
+      "idf.py",
+      "git"
+    ]
+  },
+  "providers": {
+    "openai": {
+      "kind": "openai-compatible",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "model": "gpt-4.1"
+    },
+    "deepseek": {
+      "kind": "openai-compatible",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat"
+    },
+    "openrouter": {
+      "kind": "openai-compatible",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "model": "openai/gpt-4.1"
+    },
+    "anthropic": {
+      "kind": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "model": "claude-3-7-sonnet-latest"
+    },
+    "gemini": {
+      "kind": "gemini",
+      "baseUrl": "https://generativelanguage.googleapis.com",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "model": "gemini-2.5-pro"
+    },
+    "ollama": {
+      "kind": "ollama",
+      "baseUrl": "http://127.0.0.1:11434",
+      "model": "qwen2.5-coder:14b"
+    },
+    "custom": {
+      "kind": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "apiKeyEnv": "CUSTOM_LLM_API_KEY",
+      "model": "local-model"
+    }
+  }
+}
