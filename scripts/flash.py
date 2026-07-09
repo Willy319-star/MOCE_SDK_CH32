@@ -2,12 +2,33 @@
 
 import argparse
 from pathlib import Path
+import shutil
 import subprocess
 
 
 def run(cmd):
     print("[CMD]", " ".join(str(x) for x in cmd))
     subprocess.check_call(cmd)
+
+
+def resolve_tool(root, name):
+    if name == "minichlink":
+        bundled = root / "tools" / "ch32fun" / "minichlink" / "minichlink.exe"
+        if bundled.exists():
+            return str(bundled)
+
+    found = shutil.which(name)
+    if found:
+        return found
+
+    if name == "minichlink":
+        raise FileNotFoundError(
+            "minichlink not found. Expected bundled tool at "
+            f"{root / 'tools' / 'ch32fun' / 'minichlink' / 'minichlink.exe'} "
+            "or minichlink in PATH."
+        )
+
+    raise FileNotFoundError(f"{name} not found in PATH")
 
 
 def main():
@@ -34,16 +55,16 @@ def main():
     if args.tool == "minichlink":
         if not bin_file.exists():
             raise FileNotFoundError(f"BIN not found: {bin_file}")
-        run(["minichlink", "-w", str(bin_file), "flash", "-b"])
+        run([resolve_tool(root, "minichlink"), "-w", str(bin_file), "flash", "-b"])
     elif args.tool == "wchisp":
         if not bin_file.exists():
             raise FileNotFoundError(f"BIN not found: {bin_file}")
-        run(["wchisp", "flash", str(bin_file)])
+        run([resolve_tool(root, "wchisp"), "flash", str(bin_file)])
     else:
         if not args.interface:
             raise ValueError("--interface is required for openocd")
         run([
-            "openocd",
+            resolve_tool(root, "openocd"),
             "-f", args.interface,
             "-c", f"program {elf} verify reset exit",
         ])

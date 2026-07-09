@@ -6,12 +6,12 @@
 
 /*
  * OLED SSD1306 0.96" I2C
- * Address: 0x3C (7-bit) -> 0x78 (8-bit write)
+ * Address: 0x7A (8-bit) -> 0x3D (7-bit)
  * Based on examples/oled_096_readout
  */
 
-#define OLED_ADDR_7BIT 0x3CU
-#define OLED_ADDR_WRITE (OLED_ADDR_7BIT << 1)
+#define OLED_ADDR_8BIT 0x7AU
+#define OLED_ADDR_7BIT (OLED_ADDR_8BIT >> 1)
 
 #define OLED_WIDTH  128U
 #define OLED_HEIGHT  64U
@@ -120,13 +120,13 @@ static mcu_port_i2c_t oled_i2c = {
 static void oled_write_cmd(uint8_t cmd)
 {
     uint8_t buf[2] = {0x00U, cmd}; /* Co=0, D/C#=0 */
-    (void)mcu_port_i2c_write(&oled_i2c, OLED_ADDR_WRITE, buf, 2U);
+    (void)mcu_port_i2c_write(&oled_i2c, OLED_ADDR_7BIT, buf, 2U);
 }
 
 static void oled_write_data(uint8_t data)
 {
     uint8_t buf[2] = {0x40U, data}; /* Co=0, D/C#=1 */
-    (void)mcu_port_i2c_write(&oled_i2c, OLED_ADDR_WRITE, buf, 2U);
+    (void)mcu_port_i2c_write(&oled_i2c, OLED_ADDR_7BIT, buf, 2U);
 }
 
 static void oled_write_data_buf(const uint8_t *data, uint16_t len)
@@ -219,7 +219,7 @@ void app_setup(void)
     vibe_serial_begin(115200U);
     mcu_port_delay_ms(300U);
     vibe_println("MOCE SDK CH32 generated app");
-    vibe_println("requirement: 帮我在屏幕里显示carry yyds!");
+    vibe_println("requirement: display HELLO LINEAR! on OLED");
 
     /* Initialize I2C for OLED */
     if (mcu_port_i2c_init(&oled_i2c) != 0U) {
@@ -231,7 +231,7 @@ void app_setup(void)
 
     /* Check OLED presence */
     if (mcu_port_i2c_is_ready(&oled_i2c, OLED_ADDR_7BIT) == 0U) {
-        vibe_println("OLED not found at 0x3C");
+        vibe_println("OLED not found at addr8=0x7A addr7=0x3D");
         return;
     }
     vibe_println("OLED detected");
@@ -242,7 +242,7 @@ void app_setup(void)
 
     /* Display text on page 2 (row ~16) */
     oled_set_cursor(2U, 20U);
-    oled_write_string("carry yyds!");
+    oled_write_string("HELLO LINEAR!");
 
     vibe_println("OLED display done");
 

@@ -19,24 +19,23 @@
 #define CAN_ID_PWM_SET        0x420U
 #define CAN_ID_GATEWAY_ACK    0x500U
 
-#define OLED_ADDR8            0x7AU
+#define OLED_ADDR8            0x78U
 #define OLED_ADDR7            (OLED_ADDR8 >> 1)
 #define MPU_REPORT_PERIOD_MS  500U
 #define CAN_POLL_PERIOD_MS    20U
-#define MOTOR_A_PWM_PERIOD_MS 10U
 
 #define PWM_DEFAULT_FREQ_HZ   1000U
 #define PWM_TIMER_CLOCK_HZ    96000000UL
 #define PWM_PERIOD_TICKS      1000U
 
 #define MOTOR_A_PWM_PORT      GPIOA
-#define MOTOR_A_PWM_PIN       GPIO_Pin_4
-#define MOTOR_A_IN2_PORT      GPIOA
-#define MOTOR_A_IN2_PIN       GPIO_Pin_5
+#define MOTOR_A_PWM_PIN       GPIO_Pin_7
+#define MOTOR_A_DIR_PORT      GPIOA
+#define MOTOR_A_DIR_PIN       GPIO_Pin_5
 #define MOTOR_B_PWM_PORT      GPIOA
 #define MOTOR_B_PWM_PIN       GPIO_Pin_6
-#define MOTOR_B_IN2_PORT      GPIOA
-#define MOTOR_B_IN2_PIN       GPIO_Pin_7
+#define MOTOR_B_DIR_PORT      GPIOA
+#define MOTOR_B_DIR_PIN       GPIO_Pin_4
 #define MOTOR_GPIO_CLK        RCC_APB2Periph_GPIOA
 
 static uint8_t can_ready;
@@ -221,27 +220,28 @@ static void motor_gpio_init(void)
     RCC_APB2PeriphClockCmd(MOTOR_GPIO_CLK | RCC_APB2Periph_AFIO, ENABLE);
     AFIO->PCFR1 &= ~(uint32_t)AFIO_PCFR1_TIM3_REMAP;
 
-    gpio.GPIO_Pin = MOTOR_A_PWM_PIN | MOTOR_A_IN2_PIN | MOTOR_B_IN2_PIN;
+    gpio.GPIO_Pin = MOTOR_A_DIR_PIN | MOTOR_B_DIR_PIN;
     gpio.GPIO_Mode = GPIO_Mode_Out_PP;
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOA, &gpio);
 
-    GPIO_ResetBits(MOTOR_A_PWM_PORT, MOTOR_A_PWM_PIN);
-    GPIO_ResetBits(MOTOR_A_IN2_PORT, MOTOR_A_IN2_PIN);
-    GPIO_ResetBits(MOTOR_B_IN2_PORT, MOTOR_B_IN2_PIN);
+    /* DIR low means forward for both motors. */
+    GPIO_ResetBits(MOTOR_A_DIR_PORT, MOTOR_A_DIR_PIN);
+    GPIO_ResetBits(MOTOR_B_DIR_PORT, MOTOR_B_DIR_PIN);
 }
 
-static void motor_b_pwm_init(void)
+static void motor_pwm_init(void)
 {
     GPIO_InitTypeDef gpio = {0};
     uint32_t prescaler;
 
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
 
-    gpio.GPIO_Pin = MOTOR_B_PWM_PIN;
+    /* TIM3_CH1 = PA6 -> motor B PWM2, TIM3_CH2 = PA7 -> motor A PWM1. */
+    gpio.GPIO_Pin = MOTOR_B_PWM_PIN | MOTOR_A_PWM_PIN;
     gpio.GPIO_Mode = GPIO_Mode_AF_PP;
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(MOTOR_B_PWM_PORT, &gpio);
+    GPIO_Init(GPIOA, &gpio);
 
     prescaler = (PWM_TIMER_CLOCK_HZ / (PWM_DEFAULT_FREQ_HZ * PWM_PERIOD_TICKS));
     if (prescaler == 0U) {
@@ -252,8 +252,9 @@ static void motor_b_pwm_init(void)
     TIM3->PSC = (uint16_t)(prescaler - 1U);
     TIM3->ATRLR = (uint16_t)(PWM_PERIOD_TICKS - 1U);
     TIM3->CH1CVR = 0U;
-    TIM3->CHCTLR1 = (uint16_t)((TIM3->CHCTLR1 & 0xFF00U) | 0x0068U);
-    TIM3->CCER |= 0x0001U;
+    TIM3->CH2CVR = 0U;
+    TIM3->CHCTLR1 = 0x6868U; /* PWM mode 1 + preload on CH1 and CH2. */
+    TIM3->CCER = (uint16_t)((TIM3->CCER & ~(uint16_t)0x0033U) | 0x0011U);
     TIM3->SWEVGR |= 0x0001U;
     TIM3->CTLR1 |= 0x0081U;
 }
@@ -261,56 +262,29 @@ static void motor_b_pwm_init(void)
 static void motors_init(void)
 {
     motor_gpio_init();
-    motor_b_pwm_init();
+    motor_pwm_init();
     motor_a_duty_permille = 0U;
     motor_b_duty_permille = 0U;
 }
 
-static void motor_a_pwm_task(void)
-{
-    static uint8_t phase;
-    uint16_t threshold;
-
-    if (motor_a_duty_permille == 0U) {
-        GPIO_ResetBits(MOTOR_A_PWM_PORT, MOTOR_A_PWM_PIN);
-        GPIO_ResetBits(MOTOR_A_IN2_PORT, MOTOR_A_IN2_PIN);
-        phase = 0U;
-        return;
-    }
-
-    if (motor_a_duty_permille >= 1000U) {
-        GPIO_SetBits(MOTOR_A_PWM_PORT, MOTOR_A_PWM_PIN);
-        GPIO_ResetBits(MOTOR_A_IN2_PORT, MOTOR_A_IN2_PIN);
-        phase = 0U;
-        return;
-    }
-
-    threshold = (uint16_t)(motor_a_duty_permille / 10U);
-    if (phase < threshold) {
-        GPIO_SetBits(MOTOR_A_PWM_PORT, MOTOR_A_PWM_PIN);
-    } else {
-        GPIO_ResetBits(MOTOR_A_PWM_PORT, MOTOR_A_PWM_PIN);
-    }
-    GPIO_ResetBits(MOTOR_A_IN2_PORT, MOTOR_A_IN2_PIN);
-
-    ++phase;
-    if (phase >= 100U) {
-        phase = 0U;
-    }
-}
-
 static void motor_set_duty(uint8_t channel, uint16_t duty_permille)
 {
+    uint16_t pulse;
+
     if (duty_permille > 1000U) {
         duty_permille = 1000U;
     }
 
+    pulse = (uint16_t)((PWM_PERIOD_TICKS * duty_permille) / 1000U);
+
     if (channel == 0U) {
         motor_a_duty_permille = duty_permille;
+        GPIO_ResetBits(MOTOR_A_DIR_PORT, MOTOR_A_DIR_PIN);
+        TIM3->CH2CVR = pulse;
     } else if (channel == 1U) {
         motor_b_duty_permille = duty_permille;
-        GPIO_ResetBits(MOTOR_B_IN2_PORT, MOTOR_B_IN2_PIN);
-        TIM3->CH1CVR = (uint16_t)((PWM_PERIOD_TICKS * duty_permille) / 1000U);
+        GPIO_ResetBits(MOTOR_B_DIR_PORT, MOTOR_B_DIR_PIN);
+        TIM3->CH1CVR = pulse;
     }
 }
 
@@ -424,8 +398,8 @@ void app_setup(void)
     mcu_port_delay_ms(300U);
     vibe_println("MOCE SDK CH32V203G6U6 gateway");
     vibe_println("CAN 50k: MPU report 0x350-0x352, OLED cmd 0x410/0x411, PWM cmd 0x420");
-    vibe_println("Motor A: PA4 PWM-software + PA5 low, Motor B: PA6 TIM3_CH1 + PA7 low");
-    vibe_println("PA6/PA7 support TIM3 PWM; PA4/PA5 are GPIO/SPI/ADC, no hardware PWM on this package");
+    vibe_println("Motor A: PA7 TIM3_CH2 PWM + PA5 DIR low, Motor B: PA6 TIM3_CH1 PWM + PA4 DIR low");
+    vibe_println("CAN 0x420: channel 0->A, channel 1->B, duty 0..1000 permille");
 
     motors_init();
 
@@ -445,5 +419,10 @@ void app_setup(void)
 
     (void)vibe_task_every_ms(MPU_REPORT_PERIOD_MS, mpu_report_task);
     (void)vibe_task_every_ms(CAN_POLL_PERIOD_MS, can_command_task);
-    (void)vibe_task_every_ms(MOTOR_A_PWM_PERIOD_MS, motor_a_pwm_task);
 }
+
+
+
+
+
+
