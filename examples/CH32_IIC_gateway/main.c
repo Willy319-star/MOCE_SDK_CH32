@@ -209,7 +209,6 @@ static uint8_t oled_init(void)
     }
     oled_ready = 1U;
     oled_clear();
-    oled_string(0U, 0U, "CH32 GATEWAY");
     return 1U;
 }
 
@@ -420,6 +419,5 @@ void app_setup(void)
     (void)vibe_task_every_ms(MPU_REPORT_PERIOD_MS, mpu_report_task);
     (void)vibe_task_every_ms(CAN_POLL_PERIOD_MS, can_command_task);
 }
-
 
 
