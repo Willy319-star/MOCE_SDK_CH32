@@ -4,12 +4,25 @@
 #include "ch32v20x_rcc.h"
 
 #define I2C_TIMEOUT 100000U
+#define I2C_RECOVERY_PULSES 9U
+
+static void i2c_recovery_delay(void)
+{
+    volatile uint32_t i;
+
+    for (i = 0U; i < 600U; ++i) {
+        __asm volatile ("nop");
+    }
+}
 
 static uint8_t wait_event(I2C_TypeDef *i2c, uint32_t event)
 {
     uint32_t guard = I2C_TIMEOUT;
 
     while (I2C_CheckEvent(i2c, event) != READY) {
+        if (I2C_GetFlagStatus(i2c, I2C_FLAG_AF) != RESET) {
+            return 0U;
+        }
         if (--guard == 0U) {
             return 0U;
         }
@@ -36,6 +49,9 @@ static uint8_t wait_flag_set(I2C_TypeDef *i2c, uint32_t flag)
     uint32_t guard = I2C_TIMEOUT;
 
     while (I2C_GetFlagStatus(i2c, flag) == RESET) {
+        if (I2C_GetFlagStatus(i2c, I2C_FLAG_AF) != RESET) {
+            return 0U;
+        }
         if (--guard == 0U) {
             return 0U;
         }
@@ -51,6 +67,31 @@ static void clear_addr_flag(I2C_TypeDef *i2c)
     tmp = i2c->STAR1;
     tmp = i2c->STAR2;
     (void)tmp;
+}
+
+static void i2c_stop_and_clear_error(I2C_TypeDef *i2c)
+{
+    I2C_GenerateSTOP(i2c, ENABLE);
+    I2C_ClearFlag(i2c, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO | I2C_FLAG_OVR);
+}
+
+static uint8_t wait_addr_ack_or_nack(I2C_TypeDef *i2c)
+{
+    uint32_t guard = I2C_TIMEOUT;
+
+    while (guard-- > 0U) {
+        if (I2C_GetFlagStatus(i2c, I2C_FLAG_ADDR) != RESET) {
+            clear_addr_flag(i2c);
+            return 1U;
+        }
+
+        if (I2C_GetFlagStatus(i2c, I2C_FLAG_AF) != RESET) {
+            I2C_ClearFlag(i2c, I2C_FLAG_AF);
+            return 0U;
+        }
+    }
+
+    return 0U;
 }
 
 uint8_t mcu_port_i2c_init(mcu_port_i2c_t *i2c)
@@ -84,62 +125,130 @@ uint8_t mcu_port_i2c_init(mcu_port_i2c_t *i2c)
     init.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
     I2C_Init(i2c->i2c, &init);
     I2C_Cmd(i2c->i2c, ENABLE);
+    I2C_ClearFlag(i2c->i2c, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO | I2C_FLAG_OVR);
 
     i2c->initialized = 1U;
     return 1U;
 }
 
-uint8_t mcu_port_i2c_is_ready(mcu_port_i2c_t *i2c, uint8_t address)
+uint8_t mcu_port_i2c_recover_bus(mcu_port_i2c_t *i2c)
 {
-    uint8_t ok;
+    GPIO_InitTypeDef gpio = {0};
+    uint8_t i;
 
-    if (i2c == 0 || !i2c->initialized) {
+    if (i2c == 0) {
         return 0U;
     }
 
-    if (!wait_flag_clear(i2c->i2c, I2C_FLAG_BUSY)) {
+    RCC_APB2PeriphClockCmd(i2c->gpio_clock | RCC_APB2Periph_AFIO, ENABLE);
+    RCC_APB1PeriphClockCmd(i2c->i2c_clock, ENABLE);
+
+    I2C_Cmd(i2c->i2c, DISABLE);
+    I2C_DeInit(i2c->i2c);
+
+    gpio.GPIO_Mode = GPIO_Mode_Out_OD;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+
+    gpio.GPIO_Pin = i2c->scl_pin;
+    GPIO_Init(i2c->scl_port, &gpio);
+    gpio.GPIO_Pin = i2c->sda_pin;
+    GPIO_Init(i2c->sda_port, &gpio);
+
+    GPIO_SetBits(i2c->scl_port, i2c->scl_pin);
+    GPIO_SetBits(i2c->sda_port, i2c->sda_pin);
+    i2c_recovery_delay();
+
+    for (i = 0U; i < I2C_RECOVERY_PULSES; ++i) {
+        GPIO_ResetBits(i2c->scl_port, i2c->scl_pin);
+        i2c_recovery_delay();
+        GPIO_SetBits(i2c->scl_port, i2c->scl_pin);
+        i2c_recovery_delay();
+    }
+
+    GPIO_ResetBits(i2c->sda_port, i2c->sda_pin);
+    i2c_recovery_delay();
+    GPIO_SetBits(i2c->scl_port, i2c->scl_pin);
+    i2c_recovery_delay();
+    GPIO_SetBits(i2c->sda_port, i2c->sda_pin);
+    i2c_recovery_delay();
+
+    i2c->initialized = 0U;
+    return mcu_port_i2c_init(i2c);
+}
+
+static uint8_t i2c_prepare_bus(mcu_port_i2c_t *i2c)
+{
+    if (i2c == 0) {
+        return 0U;
+    }
+
+    if (!i2c->initialized && !mcu_port_i2c_init(i2c)) {
+        return 0U;
+    }
+
+    I2C_ClearFlag(i2c->i2c, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO | I2C_FLAG_OVR);
+    if (wait_flag_clear(i2c->i2c, I2C_FLAG_BUSY)) {
+        return 1U;
+    }
+
+    if (!mcu_port_i2c_recover_bus(i2c)) {
+        return 0U;
+    }
+
+    I2C_ClearFlag(i2c->i2c, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO | I2C_FLAG_OVR);
+    return wait_flag_clear(i2c->i2c, I2C_FLAG_BUSY);
+}
+
+uint8_t mcu_port_i2c_is_ready(mcu_port_i2c_t *i2c, uint8_t address)
+{
+    if (!i2c_prepare_bus(i2c)) {
         return 0U;
     }
 
     I2C_GenerateSTART(i2c->i2c, ENABLE);
-    ok = wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT);
-    if (ok) {
-        I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Transmitter);
-        ok = wait_event(i2c->i2c, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED);
+    if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT)) {
+        i2c_stop_and_clear_error(i2c->i2c);
+        return 0U;
     }
-    I2C_GenerateSTOP(i2c->i2c, ENABLE);
 
-    return ok;
+    I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Transmitter);
+    if (wait_addr_ack_or_nack(i2c->i2c)) {
+        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        return 1U;
+    }
+
+    i2c_stop_and_clear_error(i2c->i2c);
+    return 0U;
 }
 
 uint8_t mcu_port_i2c_write(mcu_port_i2c_t *i2c, uint8_t address, const uint8_t *data, uint16_t length)
 {
     uint16_t i;
 
-    if (i2c == 0 || data == 0 || length == 0U || !i2c->initialized) {
+    if (i2c == 0 || data == 0 || length == 0U) {
         return 0U;
     }
 
-    if (!wait_flag_clear(i2c->i2c, I2C_FLAG_BUSY)) {
+    if (!i2c_prepare_bus(i2c)) {
         return 0U;
     }
 
     I2C_GenerateSTART(i2c->i2c, ENABLE);
     if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Transmitter);
-    if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+    if (!wait_addr_ack_or_nack(i2c->i2c)) {
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     for (i = 0U; i < length; ++i) {
         I2C_SendData(i2c->i2c, data[i]);
         if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
-            I2C_GenerateSTOP(i2c->i2c, ENABLE);
+            i2c_stop_and_clear_error(i2c->i2c);
             return 0U;
         }
     }
@@ -150,35 +259,35 @@ uint8_t mcu_port_i2c_write(mcu_port_i2c_t *i2c, uint8_t address, const uint8_t *
 
 uint8_t mcu_port_i2c_write_reg(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t value)
 {
-    if (i2c == 0 || !i2c->initialized) {
+    if (i2c == 0) {
         return 0U;
     }
 
-    if (!wait_flag_clear(i2c->i2c, I2C_FLAG_BUSY)) {
+    if (!i2c_prepare_bus(i2c)) {
         return 0U;
     }
 
     I2C_GenerateSTART(i2c->i2c, ENABLE);
     if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Transmitter);
-    if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+    if (!wait_addr_ack_or_nack(i2c->i2c)) {
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_SendData(i2c->i2c, reg);
     if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_SendData(i2c->i2c, value);
     if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
@@ -190,63 +299,59 @@ uint8_t mcu_port_i2c_read_regs(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg
 {
     uint16_t i;
 
-    if (i2c == 0 || data == 0 || length == 0U || !i2c->initialized) {
+    if (i2c == 0 || data == 0 || length == 0U) {
         return 0U;
     }
 
-    if (!wait_flag_clear(i2c->i2c, I2C_FLAG_BUSY)) {
+    if (!i2c_prepare_bus(i2c)) {
         return 0U;
     }
 
     I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
     I2C_GenerateSTART(i2c->i2c, ENABLE);
     if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Transmitter);
-    if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+    if (!wait_addr_ack_or_nack(i2c->i2c)) {
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_SendData(i2c->i2c, reg);
     if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_GenerateSTART(i2c->i2c, ENABLE);
     if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        i2c_stop_and_clear_error(i2c->i2c);
         return 0U;
     }
 
     I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Receiver);
-    if (length == 1U) {
-        if (!wait_flag_set(i2c->i2c, I2C_FLAG_ADDR)) {
-            I2C_GenerateSTOP(i2c->i2c, ENABLE);
-            return 0U;
-        }
+    if (!wait_addr_ack_or_nack(i2c->i2c)) {
+        i2c_stop_and_clear_error(i2c->i2c);
+        I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
+        return 0U;
+    }
 
+    if (length == 1U) {
         I2C_AcknowledgeConfig(i2c->i2c, DISABLE);
-        clear_addr_flag(i2c->i2c);
         I2C_GenerateSTOP(i2c->i2c, ENABLE);
 
         if (!wait_flag_set(i2c->i2c, I2C_FLAG_RXNE)) {
             I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
+            i2c_stop_and_clear_error(i2c->i2c);
             return 0U;
         }
 
         data[0] = I2C_ReceiveData(i2c->i2c);
         I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
         return 1U;
-    }
-
-    if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED)) {
-        I2C_GenerateSTOP(i2c->i2c, ENABLE);
-        return 0U;
     }
 
     for (i = 0U; i < length; ++i) {
@@ -256,8 +361,8 @@ uint8_t mcu_port_i2c_read_regs(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg
         }
 
         if (!wait_flag_set(i2c->i2c, I2C_FLAG_RXNE)) {
-            I2C_GenerateSTOP(i2c->i2c, ENABLE);
             I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
+            i2c_stop_and_clear_error(i2c->i2c);
             return 0U;
         }
 
@@ -276,4 +381,3 @@ uint8_t mcu_port_i2c_read_reg(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg,
 
     return mcu_port_i2c_read_regs(i2c, address, reg, value, 1U);
 }
-
