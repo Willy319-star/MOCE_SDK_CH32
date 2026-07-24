@@ -17,7 +17,9 @@ typedef struct {
 
 uint8_t mcu_port_i2c_init(mcu_port_i2c_t *i2c);
 uint8_t mcu_port_i2c_is_ready(mcu_port_i2c_t *i2c, uint8_t address);
+uint8_t mcu_port_i2c_recover_bus(mcu_port_i2c_t *i2c);
 uint8_t mcu_port_i2c_write(mcu_port_i2c_t *i2c, uint8_t address, const uint8_t *data, uint16_t length);
 uint8_t mcu_port_i2c_write_reg(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t value);
 uint8_t mcu_port_i2c_read_reg(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t *value);
 uint8_t mcu_port_i2c_read_regs(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t *data, uint16_t length);
+

@@ -32,7 +32,7 @@
 #define MPU_STATUS_GYRO    0x21U
 #define MPU_STATUS_TEMP    0x22U
 
-#define OLED_ADDR8         0x7AU
+#define OLED_ADDR8         0x78U
 #define OLED_ADDR7         (OLED_ADDR8 >> 1)
 
 static uint8_t can_ready;
@@ -226,10 +226,18 @@ static void i2c_scan(void)
     uint8_t found_count = 0U;
     uint8_t report_count = 0U;
     uint8_t addr;
+    char line[64];
 
     vibe_println("I2C scan requested");
+    if (!mcu_port_i2c_init(&i2c_bus)) {
+        vibe_println("I2C scan init failed, try recovery");
+        (void)mcu_port_i2c_recover_bus(&i2c_bus);
+    }
+
     for (addr = 0x03U; addr <= 0x77U; ++addr) {
         if (mcu_port_i2c_is_ready(&i2c_bus, addr)) {
+            (void)snprintf(line, sizeof(line), "I2C found addr=0x%02X", addr);
+            vibe_println(line);
             if (report_count < sizeof(found)) {
                 found[report_count] = addr;
                 report_count++;
@@ -238,6 +246,8 @@ static void i2c_scan(void)
         }
     }
 
+    (void)snprintf(line, sizeof(line), "I2C scan found_count=%u", found_count);
+    vibe_println(line);
     i2c_send_scan_result(found_count, found);
     (void)node_send_ack(NODE_ID, DEVICE_TYPE, I2C_SCAN_CMD, 1U);
 }
@@ -326,6 +336,7 @@ static void can_command_task(void)
         case OLED_INIT_CMD:
             vibe_println("OLED init requested");
             oled_ready = oled_init();
+            vibe_println(oled_ready ? "OLED init ok" : "OLED init failed");
             (void)node_send_ack(NODE_ID, DEVICE_TYPE, OLED_INIT_CMD, oled_ready);
             break;
         case OLED_CLEAR_CMD:
@@ -344,6 +355,8 @@ static void can_command_task(void)
                 char line[64];
                 (void)snprintf(line, sizeof(line), "MPU6050 ready=%u WHO_AM_I=0x%02X", mpu_ready, whoami);
                 vibe_println(line);
+            } else {
+                vibe_println("MPU6050 init failed, WHO_AM_I read failed");
             }
             (void)node_send_ack(NODE_ID, DEVICE_TYPE, MPU_INIT_CMD, mpu_ready);
             break;
@@ -375,10 +388,13 @@ void app_setup(void)
 
     can_ready = bsp_can_init_50k();
     oled_ready = oled_init();
+    vibe_println(oled_ready ? "OLED init ok" : "OLED init failed");
     mpu_ready = bsp_mpu6050_init();
     if (bsp_mpu6050_whoami(&whoami)) {
         (void)snprintf(line, sizeof(line), "MPU6050 ready=%u WHO_AM_I=0x%02X", mpu_ready, whoami);
         vibe_println(line);
+    } else {
+        vibe_println("MPU6050 init failed, WHO_AM_I read failed");
     }
 
     heartbeat_task();
@@ -387,3 +403,5 @@ void app_setup(void)
     (void)vibe_task_every_ms(CAN_POLL_MS, can_command_task);
     (void)vibe_task_every_ms(MPU_REPORT_MS, mpu_send_sample);
 }
+
+

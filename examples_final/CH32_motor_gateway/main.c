@@ -15,6 +15,8 @@
 
 #define HEARTBEAT_MS       1000U
 #define CAN_POLL_MS        20U
+#define MOTOR_FORCE_TEST   1U
+#define MOTOR_FORCE_DUTY   1000U
 
 #define MOTOR_A_PWM_PORT   GPIOA
 #define MOTOR_A_PWM_PIN    GPIO_Pin_7
@@ -109,6 +111,22 @@ static void motor_set(uint8_t channel, uint16_t duty_permille, uint8_t direction
     }
 }
 
+static void motor_force_test_print(void)
+{
+    vibe_println("MOTOR FORCE TEST");
+    vibe_println("PA7 PWM1 duty=100%");
+    vibe_println("PA5 GPIO1 dir=0");
+    vibe_println("PA6 PWM2 duty=100%");
+    vibe_println("PA4 GPIO2 dir=0");
+}
+
+static void motor_force_test_start(void)
+{
+    motor_set(0U, MOTOR_FORCE_DUTY, 0U);
+    motor_set(1U, MOTOR_FORCE_DUTY, 0U);
+    motor_force_test_print();
+}
+
 static void handle_motor_cmd(const bsp_can_frame_t *frame)
 {
     uint8_t channel;
@@ -165,8 +183,14 @@ void app_setup(void)
     motor_pwm_init();
     can_ready = bsp_can_init_50k();
     vibe_println(can_ready ? "CAN init ok" : "CAN init failed");
+#if MOTOR_FORCE_TEST
+    motor_force_test_start();
+    (void)vibe_task_every_ms(1000U, motor_force_test_print);
+#else
     heartbeat_task();
-
     (void)vibe_task_every_ms(HEARTBEAT_MS, heartbeat_task);
     (void)vibe_task_every_ms(CAN_POLL_MS, can_command_task);
+#endif
 }
+
+
