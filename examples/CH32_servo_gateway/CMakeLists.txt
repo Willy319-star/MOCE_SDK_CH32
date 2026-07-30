@@ -3,7 +3,7 @@ add_executable(${APP}.elf
 )
 
 target_include_directories(${APP}.elf PRIVATE
-    ${CMAKE_SOURCE_DIR}/examples_final/common
+    ${CMAKE_SOURCE_DIR}/examples/common
 )
 
 target_link_libraries(${APP}.elf PRIVATE
@@ -22,3 +22,4 @@ add_custom_command(TARGET ${APP}.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O ihex ${APP}.elf ${APP}.hex
     COMMAND ${CMAKE_OBJCOPY} -O binary ${APP}.elf ${APP}.bin
 )
+
