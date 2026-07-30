@@ -3,6 +3,9 @@
 #include <stdint.h>
 
 #define BSP_CAN_MAX_DATA_LEN 8U
+#define BSP_CAN_BITRATE_50K   50000UL
+#define BSP_CAN_BITRATE_250K 250000UL
+#define BSP_CAN_BITRATE_500K 500000UL
 
 typedef struct {
     uint32_t id;
@@ -21,6 +24,7 @@ typedef struct {
     uint8_t rx_sample;
 } bsp_can_status_t;
 
+uint8_t bsp_can_init(uint32_t bitrate_hz);
 uint8_t bsp_can_init_50k(void);
 uint8_t bsp_can_send_std(uint16_t id, const uint8_t *data, uint8_t len);
 uint8_t bsp_can_receive(bsp_can_frame_t *frame);

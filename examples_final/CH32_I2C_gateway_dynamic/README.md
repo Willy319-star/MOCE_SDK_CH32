@@ -79,12 +79,11 @@ After assignment, normal traffic uses MOCE gateway CAN ids:
 - `0x07` set I2C speed, 0 for 100 kHz and 1 for 400 kHz.
 - `0x08` buffered multi-byte raw write. ESP32 sends chunks with START/END flags; CH32 buffers the bytes and performs one I2C write when END arrives. This is intended for OLED-style command/data streams without putting OLED fonts or display logic into CH32.
 
+Every `0x08` CAN fragment returns status and ACK before ESP32 sends the next fragment. The bridge still performs only one downstream I2C write at END. This deliberately favors observable, recoverable transfer errors over the former experimental final-ACK-only mode.
+
 ## Filtering and Retry Behavior
 
-The BSP CAN driver is not modified. This app reconfigures CAN acceptance filtering after `bsp_can_init_50k()`:
-
-- Before assignment: accept only discovery/control frame `0x000`.
-- After assignment: accept discovery/control frame `0x000` and this node's command frame `0x200 + node`.
+This app uses 500 kbit/s CAN through `bsp_can_init(BSP_CAN_BITRATE_500K)`. The CH32V20x hardware filter is kept open because the previous 16-bit list configuration intermittently dropped valid dynamic command IDs. The application dispatch layer still processes only discovery/control ID `0x000` and, after assignment, this node's command ID `0x200 + node`.
 
 Existing retry behavior remains:
 

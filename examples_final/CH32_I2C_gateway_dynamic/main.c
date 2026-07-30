@@ -10,6 +10,7 @@
 
 #define DEVICE_TYPE        DEVICE_TYPE_I2C
 #define FW_VERSION         3U
+#define NODE_PROTOCOL_VERSION 1U
 
 #define CAP_SCAN           0x01U
 #define CAP_PROBE          0x02U
@@ -128,11 +129,35 @@ static mcu_port_i2c_t i2c_bus = {
     .initialized = 0U,
 };
 
+static uint16_t crc16_ccitt_false(const uint8_t *data, uint16_t len)
+{
+    uint16_t crc = 0xFFFFU;
+    uint16_t i;
+    uint8_t bit;
+
+    for (i = 0U; i < len; ++i) {
+        crc ^= (uint16_t)data[i] << 8U;
+        for (bit = 0U; bit < 8U; ++bit) {
+            crc = ((crc & 0x8000U) != 0U)
+                      ? (uint16_t)((crc << 1U) ^ 0x1021U)
+                      : (uint16_t)(crc << 1U);
+        }
+    }
+    return crc;
+}
+
 static uint16_t read_node_token(void)
 {
-    const volatile uint32_t *uid = (const volatile uint32_t *)CH32_UID_BASE;
-    uint32_t mixed = uid[0] ^ uid[1] ^ uid[2] ^ 0x4932U;
-    uint16_t token = (uint16_t)((mixed & 0xFFFFU) ^ ((mixed >> 16U) & 0xFFFFU));
+    const volatile uint8_t *uid = (const volatile uint8_t *)CH32_UID_BASE;
+    uint8_t identity[13];
+    uint8_t i;
+    uint16_t token;
+
+    for (i = 0U; i < 12U; ++i) {
+        identity[i] = uid[i];
+    }
+    identity[12] = DEVICE_TYPE;
+    token = crc16_ccitt_false(identity, (uint16_t)sizeof(identity));
 
     if (token == 0U || token == 0xFFFFU) {
         token = 0x4932U;
@@ -154,16 +179,29 @@ static uint16_t can_filter_std16(uint16_t can_id)
 static void app_can_filter_config(uint8_t assigned, uint8_t node_id)
 {
     CAN_FilterInitTypeDef filter = {0};
-    uint16_t discovery = can_filter_std16(CAN_ID_DISCOVERY);
-    uint16_t command = assigned ? can_filter_std16(CAN_ID_I2C_CMD(node_id)) : discovery;
+
+    /*
+     * Keep filtering open at the application layer.
+     *
+     * The dynamic gateway must always hear discovery/control frames and the
+     * command frame for its assigned node. The previous 16-bit list filter was
+     * too fragile on the CH32V20x CAN peripheral: nodes could transmit HELLO
+     * after assignment, but did not receive normal I2C command frames such as
+     * 0x201/0x202/0x203. The main loop still checks exact CAN IDs before
+     * handling frames, so accepting all here is functionally safe and restores
+     * multi-node command reception without changing the shared BSP CAN driver.
+     */
+    (void)assigned;
+    (void)node_id;
+    (void)can_filter_std16(CAN_ID_DISCOVERY);
 
     filter.CAN_FilterNumber = 0U;
-    filter.CAN_FilterMode = CAN_FilterMode_IdList;
-    filter.CAN_FilterScale = CAN_FilterScale_16bit;
-    filter.CAN_FilterIdHigh = discovery;
-    filter.CAN_FilterIdLow = command;
-    filter.CAN_FilterMaskIdHigh = discovery;
-    filter.CAN_FilterMaskIdLow = command;
+    filter.CAN_FilterMode = CAN_FilterMode_IdMask;
+    filter.CAN_FilterScale = CAN_FilterScale_32bit;
+    filter.CAN_FilterIdHigh = 0U;
+    filter.CAN_FilterIdLow = 0U;
+    filter.CAN_FilterMaskIdHigh = 0U;
+    filter.CAN_FilterMaskIdLow = 0U;
     filter.CAN_FilterFIFOAssignment = CAN_Filter_FIFO0;
     filter.CAN_FilterActivation = ENABLE;
     CAN_FilterInit(&filter);
@@ -642,8 +680,8 @@ static void handle_write_multi(const i2c_bridge_cmd_t *cmd)
             ok = mcu_port_i2c_write(&i2c_bus, multi_write_session.addr, multi_write_session.data, multi_write_session.len);
         }
         send_multi_write_result(cmd->addr, cmd->flags, multi_write_session.len, ok);
-        reset_multi_write_session();
         send_node_ack(I2C_CMD_WRITE_MULTI, ok);
+        reset_multi_write_session();
     } else {
         send_multi_write_result(cmd->addr, cmd->flags, multi_write_session.len, 1U);
         send_node_ack(I2C_CMD_WRITE_MULTI, 1U);
@@ -666,10 +704,14 @@ static void handle_assign_id(const bsp_can_frame_t *frame)
 {
     uint8_t new_node_id;
 
-    if (frame == 0 || frame->dlc < 6U) {
+    if (frame == 0 || frame->dlc < 8U) {
         return;
     }
     if (frame->data[0] != DYN_CMD_ASSIGN_ID || frame->data[2] != DYN_MAGIC0 || frame->data[3] != DYN_MAGIC1) {
+        return;
+    }
+    if (frame->data[6] != DEVICE_TYPE ||
+        frame->data[7] != NODE_PROTOCOL_VERSION) {
         return;
     }
     if (!frame_token_matches(frame)) {
@@ -801,7 +843,7 @@ void app_setup(void)
 {
     node_token = read_node_token();
     (void)mcu_port_i2c_init(&i2c_bus);
-    can_ready = bsp_can_init_50k();
+    can_ready = bsp_can_init(BSP_CAN_BITRATE_500K);
     if (can_ready) {
         app_can_filter_config(0U, NODE_ID_UNASSIGNED);
     }
