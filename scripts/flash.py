@@ -44,6 +44,7 @@ def main():
     elf_candidates = [
         build_dir / "project" / args.app / f"{args.app}.elf",
         build_dir / "examples" / args.app / f"{args.app}.elf",
+        build_dir / "examples_final" / args.app / f"{args.app}.elf",
         build_dir / f"{args.app}.elf",
     ]
     elf = next((candidate for candidate in elf_candidates if candidate.exists()), elf_candidates[0])

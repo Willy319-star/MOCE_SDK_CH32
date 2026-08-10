@@ -1,0 +1,959 @@
+#include "bsp_can.h"
+#include "board_pins.h"
+#include "ch32v20x_gpio.h"
+#include "ch32v20x_misc.h"
+#include "ch32v20x_rcc.h"
+#include "ch32v20x_usart.h"
+#include "vibe_api.h"
+#include "vibe_runtime.h"
+
+#include <string.h>
+
+#define CAN_ID_START_BASE         0x200U
+#define CAN_ID_DATA_BASE          0x300U
+#define CAN_ID_UART_RX_BASE       0x400U
+#define CAN_ID_ACK_BASE           0x500U
+#define CAN_ID_UART_CONFIG_BASE   0x600U
+#define CAN_ID_HELLO_BASE         0x700U
+#define CAN_ID_UART_DEBUG         0x7F1U
+#define CAN_ID_SYNC_CONTROL       0x7F2U
+#define CAN_ID_DISCOVERY          0x000U
+#define CAN_ID_STATUS_BASE        0x100U
+
+#define NODE_PROTOCOL_VERSION     1U
+#define NODE_ID_UNASSIGNED        0x00U
+#define NODE_ID_MAX               0x7FU
+#define DEVICE_TYPE_UART          0x04U
+#define NODE_CAP_RX_FORWARD       0x04U
+#define NODE_CAP_TX_FRAGMENT      0x02U
+#define NODE_CAP_DYNAMIC_NODE     0x40U
+#define NODE_CAP_BAUD_CONFIG      0x20U
+#define NODE_CAPABILITIES         (NODE_CAP_RX_FORWARD | NODE_CAP_TX_FRAGMENT | NODE_CAP_DYNAMIC_NODE | NODE_CAP_BAUD_CONFIG)
+
+#define DYN_CMD_REQUEST_ID        0xF0U
+#define DYN_CMD_ASSIGN_ID         0xF1U
+#define DYN_CMD_ID_ACK            0xF2U
+#define DYN_CMD_RELEASE_ID        0xF3U
+#define DYN_MAGIC0                0xAAU
+#define DYN_MAGIC1                0x55U
+#define ID_ACK_REPEAT_COUNT       3U
+#define HEARTBEAT_PERIOD_MS       1000U
+
+#define CH32_UID_BASE             0x1FFFF7E8UL
+
+#define SYN_PROTOCOL_VERSION      1U
+#define SYN_FRAME_MAX_SIZE        4096U
+#define SYN_DATA_PAYLOAD_SIZE     5U
+#define SYN_FRAGMENT_TIMEOUT_MS   500U
+#define SYN_UART_FLAG_SPIN_LIMIT  2000000UL
+#define SYN_UART_BAUDRATE         9600U
+#define CAN_POLL_PERIOD_MS        1U
+
+#define UART_RX_RING_SIZE         256U
+#define UART_RX_RING_MASK         (UART_RX_RING_SIZE - 1U)
+#define UART_RX_RING_MARK_IDLE    0x100U
+#define UART_RX_CAN_PAYLOAD_SIZE  5U
+#define UART_RX_CAN_RETRY_LIMIT   3U
+#define UART_RX_CAN_MIN_INTERVAL_MS 10U
+#define UART_RX_ERROR_MASK        (USART_FLAG_ORE | USART_FLAG_NE | USART_FLAG_FE | USART_FLAG_PE)
+#define UART_RX_FLAG_START        0x01U
+#define UART_RX_FLAG_END          0x02U
+#define UART_RX_FLAG_OVERFLOW     0x04U
+
+#define SYN_ACK_START             0x30U
+#define SYN_ACK_COMPLETE          0x31U
+#define SYN_ACK_PREPARED          0x32U
+#define SYN_ACK_TRIGGER_COMPLETE  0x33U
+#define SYN_ACK_CONFIG            0x34U
+
+#define SYN_START_OPTION_PREPARE_ONLY 0x01U
+#define SYN_START_OPTIONS_MASK        SYN_START_OPTION_PREPARE_ONLY
+#define SYN_SYNC_ACTION_TRIGGER       0x01U
+#define SYN_SYNC_ACTION_CANCEL        0x02U
+#define UART_CONFIG_SET_BAUD          0xB0U
+#define UART_BAUD_9600                0U
+#define UART_BAUD_115200              1U
+
+#define SYN_RESULT_FAILED         0U
+#define SYN_RESULT_OK             1U
+
+#define SYN_DETAIL_OK             0U
+#define SYN_DETAIL_DLC_ERROR      1U
+#define SYN_DETAIL_LENGTH_ERROR   2U
+#define SYN_DETAIL_BUSY           3U
+#define SYN_DETAIL_TRANSFER_ERROR 4U
+#define SYN_DETAIL_SEQUENCE_ERROR 5U
+#define SYN_DETAIL_FRAGMENT_ERROR 6U
+#define SYN_DETAIL_TIMEOUT        7U
+#define SYN_DETAIL_CRC_ERROR      8U
+#define SYN_DETAIL_UART_TIMEOUT   9U
+#define SYN_DETAIL_VERSION_ERROR  10U
+
+typedef struct {
+    uint8_t active;
+    uint8_t prepare_only;
+    uint8_t prepared;
+    uint8_t transfer_id;
+    uint16_t total_len;
+    uint16_t expected_crc;
+    uint16_t received_len;
+    uint16_t expected_sequence;
+    uint32_t last_fragment_ms;
+    uint16_t prepared_len;
+} syn_transfer_state_t;
+
+typedef struct {
+    uint8_t uid[12];
+    uint16_t uid_crc;
+    uint8_t node_id;
+} can_node_state_t;
+
+typedef struct {
+    uint8_t burst_active;
+    uint8_t burst_id;
+    uint8_t sequence;
+    uint8_t start_pending;
+    uint8_t chunk_len;
+    uint8_t chunk[UART_RX_CAN_PAYLOAD_SIZE];
+    uint8_t pending;
+    uint8_t pending_dlc;
+    uint8_t pending_attempts;
+    uint8_t pending_data[8];
+    uint8_t overflow_report_pending;
+    uint32_t last_can_tx_ms;
+} uart_rx_forward_state_t;
+
+static uint8_t can_ready;
+static uint8_t request_seq;
+static uint32_t active_uart_baud = SYN_UART_BAUDRATE;
+static uint8_t syn_frame_buffer[SYN_FRAME_MAX_SIZE];
+static syn_transfer_state_t transfer_state;
+static can_node_state_t node_state;
+static volatile uint16_t uart_rx_ring[UART_RX_RING_SIZE];
+static volatile uint8_t uart_rx_ring_head;
+static volatile uint8_t uart_rx_ring_tail;
+static volatile uint8_t uart_rx_drop_until_idle;
+static volatile uint8_t uart_rx_overflow_events;
+static volatile uint8_t uart_rx_error_events;
+static uart_rx_forward_state_t uart_rx_forward_state;
+
+void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+
+static uint16_t get_u16_le(const uint8_t *data, uint8_t offset)
+{
+    return (uint16_t)((uint16_t)data[offset] |
+                      ((uint16_t)data[(uint8_t)(offset + 1U)] << 8U));
+}
+
+static void put_u16_le(uint8_t *data, uint8_t offset, uint16_t value)
+{
+    data[offset] = (uint8_t)(value & 0xFFU);
+    data[(uint8_t)(offset + 1U)] = (uint8_t)(value >> 8U);
+}
+
+static uint16_t crc16_ccitt_false(const uint8_t *data, uint16_t len)
+{
+    uint16_t crc = 0xFFFFU;
+    uint16_t i;
+    uint8_t bit;
+
+    for (i = 0U; i < len; ++i) {
+        crc ^= (uint16_t)data[i] << 8U;
+        for (bit = 0U; bit < 8U; ++bit) {
+            crc = ((crc & 0x8000U) != 0U)
+                      ? (uint16_t)((crc << 1U) ^ 0x1021U)
+                      : (uint16_t)(crc << 1U);
+        }
+    }
+    return crc;
+}
+
+static uint8_t node_id_is_valid(uint8_t node_id)
+{
+    return (node_id >= 1U && node_id <= NODE_ID_MAX) ? 1U : 0U;
+}
+
+static uint16_t node_can_id(uint16_t base, uint8_t node_id)
+{
+    return (uint16_t)(base + node_id);
+}
+
+static void uart_rx_note_overflow_isr(void)
+{
+    if (uart_rx_overflow_events != 0xFFU) {
+        uart_rx_overflow_events++;
+    }
+}
+
+static uint8_t uart_rx_ring_push_isr(uint16_t value)
+{
+    uint8_t next_head =
+        (uint8_t)((uart_rx_ring_head + 1U) & UART_RX_RING_MASK);
+
+    if (next_head == uart_rx_ring_tail) {
+        return 0U;
+    }
+    uart_rx_ring[uart_rx_ring_head] = value;
+    uart_rx_ring_head = next_head;
+    return 1U;
+}
+
+static uint8_t uart_rx_ring_pop(uint16_t *value)
+{
+    uint8_t tail;
+
+    if (value == 0 || uart_rx_ring_tail == uart_rx_ring_head) {
+        return 0U;
+    }
+    tail = uart_rx_ring_tail;
+    *value = uart_rx_ring[tail];
+    uart_rx_ring_tail = (uint8_t)((tail + 1U) & UART_RX_RING_MASK);
+    return 1U;
+}
+
+static void uart_rx_capture_reset(void)
+{
+    USART_ITConfig(USART1, USART_IT_RXNE, DISABLE);
+    USART_ITConfig(USART1, USART_IT_IDLE, DISABLE);
+    uart_rx_ring_head = 0U;
+    uart_rx_ring_tail = 0U;
+    uart_rx_drop_until_idle = 0U;
+    uart_rx_overflow_events = 0U;
+    uart_rx_error_events = 0U;
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    USART_ITConfig(USART1, USART_IT_IDLE, ENABLE);
+}
+
+static void uart_rx_forward_reset(uint8_t preserve_burst_id)
+{
+    uint8_t burst_id = uart_rx_forward_state.burst_id;
+
+    memset(&uart_rx_forward_state, 0, sizeof(uart_rx_forward_state));
+    if (preserve_burst_id != 0U) {
+        uart_rx_forward_state.burst_id = burst_id;
+    }
+}
+
+static void uart_rx_reset_all(void)
+{
+    uart_rx_capture_reset();
+    uart_rx_forward_reset(0U);
+}
+
+void USART1_IRQHandler(void)
+{
+    uint16_t status = USART1->STATR;
+    uint8_t had_rxne =
+        ((status & USART_FLAG_RXNE) != 0U) ? 1U : 0U;
+    uint8_t had_error =
+        ((status & UART_RX_ERROR_MASK) != 0U) ? 1U : 0U;
+
+    if (had_rxne != 0U || had_error != 0U) {
+        uint8_t received = (uint8_t)USART1->DATAR;
+
+        if (had_error != 0U) {
+            uart_rx_drop_until_idle = 1U;
+            if (uart_rx_error_events != 0xFFU) {
+                uart_rx_error_events++;
+            }
+        } else if (had_rxne != 0U &&
+            uart_rx_drop_until_idle == 0U &&
+            uart_rx_ring_push_isr(received) == 0U) {
+            uart_rx_drop_until_idle = 1U;
+            uart_rx_note_overflow_isr();
+        }
+    }
+
+    if ((status & USART_FLAG_IDLE) != 0U) {
+        if (had_rxne == 0U) {
+            (void)USART1->DATAR;
+        }
+        if (uart_rx_drop_until_idle != 0U) {
+            uart_rx_drop_until_idle = 0U;
+        } else if (uart_rx_ring_push_isr(UART_RX_RING_MARK_IDLE) == 0U) {
+            uart_rx_note_overflow_isr();
+        }
+    }
+}
+
+static void uart_rx_begin_burst(void)
+{
+    uart_rx_forward_state.burst_active = 1U;
+    uart_rx_forward_state.burst_id++;
+    uart_rx_forward_state.sequence = 0U;
+    uart_rx_forward_state.start_pending = 1U;
+    uart_rx_forward_state.chunk_len = 0U;
+}
+
+static void uart_rx_prepare_frame(uint8_t end_flag)
+{
+    uint8_t flags = 0U;
+    uint8_t i;
+
+    if (uart_rx_forward_state.start_pending != 0U) {
+        flags |= UART_RX_FLAG_START;
+    }
+    if (end_flag != 0U) {
+        flags |= UART_RX_FLAG_END;
+    }
+
+    uart_rx_forward_state.pending_data[0] =
+        uart_rx_forward_state.burst_id;
+    uart_rx_forward_state.pending_data[1] =
+        uart_rx_forward_state.sequence;
+    uart_rx_forward_state.pending_data[2] = flags;
+    for (i = 0U; i < uart_rx_forward_state.chunk_len; ++i) {
+        uart_rx_forward_state.pending_data[(uint8_t)(3U + i)] =
+            uart_rx_forward_state.chunk[i];
+    }
+    uart_rx_forward_state.pending_dlc =
+        (uint8_t)(3U + uart_rx_forward_state.chunk_len);
+    uart_rx_forward_state.pending = 1U;
+    uart_rx_forward_state.pending_attempts = 0U;
+    uart_rx_forward_state.sequence++;
+    uart_rx_forward_state.start_pending = 0U;
+    uart_rx_forward_state.chunk_len = 0U;
+
+    if (end_flag != 0U) {
+        uart_rx_forward_state.burst_active = 0U;
+    }
+}
+
+static void uart_rx_schedule_overflow_report(void)
+{
+    uart_rx_capture_reset();
+    uart_rx_forward_reset(1U);
+    uart_rx_forward_state.overflow_report_pending = 1U;
+}
+
+static void uart_rx_prepare_overflow_report(void)
+{
+    uart_rx_forward_state.burst_id++;
+    uart_rx_forward_state.pending_data[0] =
+        uart_rx_forward_state.burst_id;
+    uart_rx_forward_state.pending_data[1] = 0U;
+    uart_rx_forward_state.pending_data[2] =
+        UART_RX_FLAG_START | UART_RX_FLAG_END | UART_RX_FLAG_OVERFLOW;
+    uart_rx_forward_state.pending_dlc = 3U;
+    uart_rx_forward_state.pending = 1U;
+    uart_rx_forward_state.pending_attempts = 0U;
+    uart_rx_forward_state.overflow_report_pending = 0U;
+}
+
+static void uart_rx_try_pending_frame(void)
+{
+    uint16_t can_id =
+        node_can_id(CAN_ID_UART_RX_BASE, node_state.node_id);
+    uint32_t now = vibe_millis();
+
+    if ((uint32_t)(now - uart_rx_forward_state.last_can_tx_ms) <
+        UART_RX_CAN_MIN_INTERVAL_MS) {
+        return;
+    }
+    if (bsp_can_send_std(can_id,
+                         uart_rx_forward_state.pending_data,
+                         uart_rx_forward_state.pending_dlc) != 0U) {
+        uart_rx_forward_state.last_can_tx_ms = now;
+        uart_rx_forward_state.pending = 0U;
+        uart_rx_forward_state.pending_attempts = 0U;
+        return;
+    }
+
+    uart_rx_forward_state.pending_attempts++;
+    if (uart_rx_forward_state.pending_attempts >=
+        UART_RX_CAN_RETRY_LIMIT) {
+        if ((uart_rx_forward_state.pending_data[2] &
+             UART_RX_FLAG_OVERFLOW) != 0U) {
+            uart_rx_forward_state.pending_attempts = 0U;
+        } else {
+            uart_rx_schedule_overflow_report();
+        }
+    }
+}
+
+static void uart_rx_forward_task(void)
+{
+    uint16_t entry;
+
+    if (node_state.node_id == NODE_ID_UNASSIGNED) {
+        uart_rx_reset_all();
+        return;
+    }
+
+    if (uart_rx_forward_state.pending != 0U) {
+        uart_rx_try_pending_frame();
+        return;
+    }
+
+    if (uart_rx_error_events != 0U) {
+        uart_rx_capture_reset();
+        uart_rx_forward_reset(1U);
+        return;
+    }
+
+    if (uart_rx_overflow_events != 0U) {
+        uart_rx_schedule_overflow_report();
+    }
+    if (uart_rx_forward_state.overflow_report_pending != 0U) {
+        uart_rx_prepare_overflow_report();
+        uart_rx_try_pending_frame();
+        return;
+    }
+
+    while (uart_rx_ring_pop(&entry) != 0U) {
+        if (entry == UART_RX_RING_MARK_IDLE) {
+            if (uart_rx_forward_state.burst_active != 0U) {
+                uart_rx_prepare_frame(1U);
+                return;
+            }
+            continue;
+        }
+
+        if (uart_rx_forward_state.burst_active == 0U) {
+            uart_rx_begin_burst();
+        }
+        uart_rx_forward_state.chunk[uart_rx_forward_state.chunk_len] =
+            (uint8_t)entry;
+        uart_rx_forward_state.chunk_len++;
+        if (uart_rx_forward_state.chunk_len >=
+            UART_RX_CAN_PAYLOAD_SIZE) {
+            uart_rx_prepare_frame(0U);
+            return;
+        }
+    }
+}
+
+static void load_factory_uid(void)
+{
+    const volatile uint8_t *uid =
+        (const volatile uint8_t *)CH32_UID_BASE;
+    uint8_t identity[13];
+    uint8_t i;
+
+    for (i = 0U; i < (uint8_t)sizeof(node_state.uid); ++i) {
+        node_state.uid[i] = uid[i];
+        identity[i] = uid[i];
+    }
+    identity[12] = DEVICE_TYPE_UART;
+    node_state.uid_crc =
+        crc16_ccitt_false(identity, (uint16_t)sizeof(identity));
+    if (node_state.uid_crc == 0U || node_state.uid_crc == 0xFFFFU) {
+        node_state.uid_crc = 0x5541U;
+    }
+}
+
+static void reset_transfer(void)
+{
+    memset(&transfer_state, 0, sizeof(transfer_state));
+}
+
+static void reset_assignment(void)
+{
+    reset_transfer();
+    uart_rx_reset_all();
+    node_state.node_id = NODE_ID_UNASSIGNED;
+}
+
+static void send_ack(uint8_t phase,
+                     uint16_t source_id,
+                     uint8_t result,
+                     uint8_t transfer_id,
+                     uint8_t detail,
+                     uint16_t processed_len)
+{
+    uint8_t data[8] = {0};
+
+    data[0] = phase;
+    put_u16_le(data, 1U, source_id);
+    data[3] = result;
+    data[4] = transfer_id;
+    data[5] = detail;
+    put_u16_le(data, 6U, processed_len);
+    (void)bsp_can_send_std(node_can_id(CAN_ID_ACK_BASE, node_state.node_id),
+                           data, sizeof(data));
+}
+
+static void fail_transfer(uint8_t phase,
+                          uint16_t source_id,
+                          uint8_t transfer_id,
+                          uint8_t detail)
+{
+    uint16_t processed_len = transfer_state.received_len;
+    reset_transfer();
+    send_ack(phase, source_id, SYN_RESULT_FAILED, transfer_id, detail, processed_len);
+}
+
+static uint8_t transfer_terminal_ack_phase(void)
+{
+    return (transfer_state.prepare_only != 0U)
+               ? SYN_ACK_PREPARED
+               : SYN_ACK_COMPLETE;
+}
+
+static void fail_active_transfer(uint16_t source_id,
+                                 uint8_t transfer_id,
+                                 uint8_t detail)
+{
+    uint8_t phase = transfer_terminal_ack_phase();
+    fail_transfer(phase, source_id, transfer_id, detail);
+}
+
+static void syn_uart_init(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    USART_InitTypeDef usart = {0};
+    NVIC_InitTypeDef nvic = {0};
+
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_USART1, ENABLE);
+
+    gpio.GPIO_Pin = GPIO_Pin_9;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_Init(GPIOA, &gpio);
+
+    gpio.GPIO_Pin = GPIO_Pin_10;
+    gpio.GPIO_Mode = GPIO_Mode_IPU;
+    GPIO_Init(GPIOA, &gpio);
+
+    USART_StructInit(&usart);
+    usart.USART_BaudRate = active_uart_baud;
+    usart.USART_WordLength = USART_WordLength_8b;
+    usart.USART_StopBits = USART_StopBits_1;
+    usart.USART_Parity = USART_Parity_No;
+    usart.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    usart.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+    USART_Init(USART1, &usart);
+
+    nvic.NVIC_IRQChannel = USART1_IRQn;
+    nvic.NVIC_IRQChannelPreemptionPriority = 1U;
+    nvic.NVIC_IRQChannelSubPriority = 0U;
+    nvic.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&nvic);
+
+    USART_Cmd(USART1, ENABLE);
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    USART_ITConfig(USART1, USART_IT_IDLE, ENABLE);
+}
+
+static uint8_t syn_uart_set_baud(uint32_t baud)
+{
+    if (baud != 9600U && baud != 115200U) {
+        return 0U;
+    }
+
+    USART_ITConfig(USART1, USART_IT_RXNE, DISABLE);
+    USART_ITConfig(USART1, USART_IT_IDLE, DISABLE);
+    USART_Cmd(USART1, DISABLE);
+    active_uart_baud = baud;
+    syn_uart_init();
+    return 1U;
+}
+
+static uint8_t syn_uart_write(const uint8_t *data, uint16_t len)
+{
+    uint16_t i;
+    uint32_t spins;
+
+    for (i = 0U; i < len; ++i) {
+        spins = 0U;
+        while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET) {
+            if (++spins >= SYN_UART_FLAG_SPIN_LIMIT) {
+                return 0U;
+            }
+        }
+        USART_SendData(USART1, data[i]);
+    }
+
+    spins = 0U;
+    while (USART_GetFlagStatus(USART1, USART_FLAG_TC) == RESET) {
+        if (++spins >= SYN_UART_FLAG_SPIN_LIMIT) {
+            return 0U;
+        }
+    }
+
+    return 1U;
+}
+
+static void send_id_request(void)
+{
+    uint8_t data[8] = {0};
+
+    data[0] = DYN_CMD_REQUEST_ID;
+    data[1] = DEVICE_TYPE_UART;
+    data[2] = NODE_PROTOCOL_VERSION;
+    data[3] = request_seq++;
+    put_u16_le(data, 4U, node_state.uid_crc);
+    data[6] = NODE_CAPABILITIES;
+    data[7] = 0U;
+
+    (void)bsp_can_send_std(CAN_ID_DISCOVERY, data, sizeof(data));
+}
+
+static void send_id_ack(void)
+{
+    uint8_t data[8] = {0};
+    uint8_t i;
+
+    data[0] = DYN_CMD_ID_ACK;
+    data[1] = node_state.node_id;
+    data[2] = DYN_MAGIC0;
+    data[3] = DYN_MAGIC1;
+    put_u16_le(data, 4U, node_state.uid_crc);
+    data[6] = DEVICE_TYPE_UART;
+    data[7] = NODE_PROTOCOL_VERSION;
+
+    for (i = 0U; i < ID_ACK_REPEAT_COUNT; ++i) {
+        (void)bsp_can_send_std(CAN_ID_DISCOVERY, data, sizeof(data));
+    }
+    for (i = 0U; i < ID_ACK_REPEAT_COUNT; ++i) {
+        (void)bsp_can_send_std(
+            node_can_id(CAN_ID_STATUS_BASE, node_state.node_id),
+            data, sizeof(data));
+    }
+}
+
+static void send_hello(void)
+{
+    uint8_t data[8] = {0};
+
+    data[0] = DEVICE_TYPE_UART;
+    data[1] = node_state.node_id;
+    data[2] = NODE_PROTOCOL_VERSION;
+    data[3] = NODE_CAPABILITIES;
+    data[4] = 0U;
+    put_u16_le(data, 5U, node_state.uid_crc);
+    data[7] = 0U;
+
+    (void)bsp_can_send_std(
+        node_can_id(CAN_ID_HELLO_BASE, node_state.node_id),
+        data, sizeof(data));
+}
+
+static void send_debug_status(void)
+{
+    uint8_t data[8] = {0};
+    uint32_t statr = USART1->STATR;
+
+    data[0] = 0x7EU;
+    data[1] = node_state.node_id;
+    data[2] = can_ready;
+    data[3] = request_seq;
+    data[4] = (uint8_t)(statr & 0xFFU);
+    data[5] = (uint8_t)((statr >> 8U) & 0xFFU);
+    data[6] = uart_rx_overflow_events;
+    data[7] = uart_rx_error_events;
+
+    (void)bsp_can_send_std(CAN_ID_UART_DEBUG, data, sizeof(data));
+}
+
+/*
+ * PERMISSIVE handle_assign_id: accepts any matching device type regardless
+ * of magic/token mismatch.  Debug info is transmitted via the existing
+ * send_debug_status path (0x7F1) and send_id_ack which will confirm the
+ * assigned node_id back to ESP32.
+ */
+static void handle_assign_id(const bsp_can_frame_t *frame)
+{
+    uint8_t node_id = frame->data[1];
+    uint8_t dev_type = frame->data[6];
+
+    /* Only check dev_type; accept any magic/token for now */
+    if (dev_type != DEVICE_TYPE_UART) {
+        return;
+    }
+
+    if (!node_id_is_valid(node_id)) {
+        return;
+    }
+
+    node_state.node_id = node_id;
+    send_id_ack();
+}
+
+static void handle_discovery_frame(const bsp_can_frame_t *frame)
+{
+    if (frame->dlc < 8U) {
+        return;
+    }
+
+    switch (frame->data[0]) {
+    case DYN_CMD_ASSIGN_ID:
+        handle_assign_id(frame);
+        break;
+    case DYN_CMD_RELEASE_ID:
+        if (frame->data[1] == DYN_MAGIC0 &&
+            frame->data[2] == DYN_MAGIC1) {
+            reset_assignment();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+static void heartbeat_task(void)
+{
+    if (can_ready == 0U) {
+        return;
+    }
+
+    if (node_state.node_id == NODE_ID_UNASSIGNED) {
+        send_id_request();
+    } else {
+        send_hello();
+    }
+    send_debug_status();
+}
+
+static void handle_start(const bsp_can_frame_t *frame, uint16_t source_id)
+{
+    uint8_t transfer_id = (frame->dlc > 0U) ? frame->data[0] : 0U;
+    uint8_t options;
+    uint16_t total_len;
+
+    if (transfer_state.active != 0U || transfer_state.prepared != 0U) {
+        send_ack(SYN_ACK_START, source_id, SYN_RESULT_FAILED,
+                 transfer_id, SYN_DETAIL_BUSY,
+                 (transfer_state.prepared != 0U)
+                     ? transfer_state.prepared_len
+                     : transfer_state.received_len);
+        return;
+    }
+
+    if (frame->dlc < 7U) {
+        send_ack(SYN_ACK_START, source_id, SYN_RESULT_FAILED,
+                 transfer_id, SYN_DETAIL_DLC_ERROR, 0U);
+        return;
+    }
+
+    /* ESP32 packs: [0]=transfer_id [1-2]=len [3-4]=crc [5]=version [6]=options */
+    total_len = get_u16_le(frame->data, 1U);
+    options = frame->data[6];
+
+    if (total_len > SYN_FRAME_MAX_SIZE) {
+        send_ack(SYN_ACK_START, source_id, SYN_RESULT_FAILED,
+                 transfer_id, SYN_DETAIL_LENGTH_ERROR, 0U);
+        return;
+    }
+
+    transfer_state.active = 1U;
+    transfer_state.transfer_id = transfer_id;
+    transfer_state.total_len = total_len;
+    transfer_state.expected_crc = get_u16_le(frame->data, 3U);
+    transfer_state.received_len = 0U;
+    transfer_state.expected_sequence = 0U;
+    transfer_state.last_fragment_ms = vibe_millis();
+    transfer_state.prepare_only = (options & SYN_START_OPTION_PREPARE_ONLY) ? 1U : 0U;
+
+    send_ack(SYN_ACK_START, source_id, SYN_RESULT_OK,
+             transfer_id, SYN_DETAIL_OK, 0U);
+}
+
+static void handle_data(const bsp_can_frame_t *frame, uint16_t source_id)
+{
+    uint8_t transfer_id = (frame->dlc > 0U) ? frame->data[0] : 0U;
+    uint16_t sequence;
+    uint8_t payload_len;
+    uint16_t remaining;
+    uint8_t expected_payload_len;
+    uint8_t i;
+
+    if (transfer_state.active == 0U) {
+        send_ack(transfer_terminal_ack_phase(), source_id,
+                 SYN_RESULT_FAILED, transfer_id,
+                 SYN_DETAIL_TRANSFER_ERROR, transfer_state.received_len);
+        return;
+    }
+
+    if (transfer_id != transfer_state.transfer_id) {
+        send_ack(transfer_terminal_ack_phase(), source_id,
+                 SYN_RESULT_FAILED, transfer_id,
+                 SYN_DETAIL_TRANSFER_ERROR, transfer_state.received_len);
+        return;
+    }
+
+    if (frame->dlc < 3U) {
+        fail_active_transfer(source_id, transfer_id, SYN_DETAIL_DLC_ERROR);
+        return;
+    }
+
+    /* ESP32 packs: [0]=tid [1-2]=sequence(LE uint16) [3..]=payload */
+    sequence = get_u16_le(frame->data, 1U);
+    payload_len = (frame->dlc > 3U) ? (uint8_t)(frame->dlc - 3U) : 0U;
+
+    if (sequence != transfer_state.expected_sequence) {
+        fail_active_transfer(source_id, transfer_id, SYN_DETAIL_SEQUENCE_ERROR);
+        return;
+    }
+
+    remaining = (uint16_t)(transfer_state.total_len - transfer_state.received_len);
+    expected_payload_len = (remaining > SYN_DATA_PAYLOAD_SIZE)
+                               ? SYN_DATA_PAYLOAD_SIZE
+                               : (uint8_t)remaining;
+
+    if (payload_len != expected_payload_len && remaining > 0U) {
+        fail_active_transfer(source_id, transfer_id, SYN_DETAIL_FRAGMENT_ERROR);
+        return;
+    }
+
+    for (i = 0U; i < payload_len; ++i) {
+        syn_frame_buffer[transfer_state.received_len + i] = frame->data[3U + i];
+    }
+    transfer_state.received_len = (uint16_t)(transfer_state.received_len + payload_len);
+    transfer_state.expected_sequence++;
+    transfer_state.last_fragment_ms = vibe_millis();
+
+    if (transfer_state.received_len >= transfer_state.total_len) {
+        uint16_t computed_crc = crc16_ccitt_false(syn_frame_buffer, transfer_state.received_len);
+
+        if (computed_crc != transfer_state.expected_crc) {
+            fail_active_transfer(source_id, transfer_id, SYN_DETAIL_CRC_ERROR);
+            return;
+        }
+
+        if (transfer_state.prepare_only != 0U) {
+            transfer_state.prepared = 1U;
+            transfer_state.prepared_len = transfer_state.received_len;
+            send_ack(SYN_ACK_PREPARED, source_id, SYN_RESULT_OK,
+                     transfer_id, SYN_DETAIL_OK, transfer_state.received_len);
+        } else {
+            uint8_t uart_ok = syn_uart_write(syn_frame_buffer, transfer_state.received_len);
+            if (uart_ok != 0U) {
+                send_ack(SYN_ACK_COMPLETE, source_id, SYN_RESULT_OK,
+                         transfer_id, SYN_DETAIL_OK, transfer_state.received_len);
+            } else {
+                fail_transfer(SYN_ACK_COMPLETE, source_id, transfer_id,
+                              SYN_DETAIL_UART_TIMEOUT);
+            }
+        }
+        transfer_state.active = 0U;
+    }
+}
+
+static void handle_sync_control(const bsp_can_frame_t *frame)
+{
+    uint8_t action;
+
+    if (frame->dlc < 2U) {
+        return;
+    }
+
+    action = frame->data[0];
+
+    if (action == SYN_SYNC_ACTION_TRIGGER) {
+        if (transfer_state.prepared != 0U &&
+            transfer_state.prepare_only != 0U) {
+            uint8_t uart_ok = syn_uart_write(syn_frame_buffer, transfer_state.prepared_len);
+            if (uart_ok != 0U) {
+                send_ack(SYN_ACK_TRIGGER_COMPLETE, CAN_ID_SYNC_CONTROL,
+                         SYN_RESULT_OK, 0U, SYN_DETAIL_OK,
+                         transfer_state.prepared_len);
+            } else {
+                send_ack(SYN_ACK_TRIGGER_COMPLETE, CAN_ID_SYNC_CONTROL,
+                         SYN_RESULT_FAILED, 0U, SYN_DETAIL_UART_TIMEOUT,
+                         transfer_state.prepared_len);
+            }
+            reset_transfer();
+        }
+    } else if (action == SYN_SYNC_ACTION_CANCEL) {
+        if (transfer_state.prepared != 0U) {
+            reset_transfer();
+        }
+    }
+}
+
+static void handle_uart_config(const bsp_can_frame_t *frame,
+                                uint16_t source_id)
+{
+    uint8_t subcmd;
+    uint8_t baud_idx;
+
+    if (frame->dlc < 2U) {
+        return;
+    }
+
+    subcmd = frame->data[0];
+
+    if (subcmd == UART_CONFIG_SET_BAUD) {
+        if (frame->dlc < 2U) {
+            send_ack(SYN_ACK_CONFIG, source_id, SYN_RESULT_FAILED,
+                     0U, SYN_DETAIL_DLC_ERROR, 0U);
+            return;
+        }
+        baud_idx = frame->data[1];
+        if (baud_idx == UART_BAUD_9600) {
+            if (syn_uart_set_baud(9600U) != 0U) {
+                send_ack(SYN_ACK_CONFIG, source_id, SYN_RESULT_OK,
+                         0U, SYN_DETAIL_OK, 0U);
+            } else {
+                send_ack(SYN_ACK_CONFIG, source_id, SYN_RESULT_FAILED,
+                         0U, SYN_DETAIL_TRANSFER_ERROR, 0U);
+            }
+        } else if (baud_idx == UART_BAUD_115200) {
+            if (syn_uart_set_baud(115200U) != 0U) {
+                send_ack(SYN_ACK_CONFIG, source_id, SYN_RESULT_OK,
+                         0U, SYN_DETAIL_OK, 0U);
+            } else {
+                send_ack(SYN_ACK_CONFIG, source_id, SYN_RESULT_FAILED,
+                         0U, SYN_DETAIL_TRANSFER_ERROR, 0U);
+            }
+        } else {
+            send_ack(SYN_ACK_CONFIG, source_id, SYN_RESULT_FAILED,
+                     0U, SYN_DETAIL_LENGTH_ERROR, 0U);
+        }
+    }
+}
+
+static void can_command_task(void)
+{
+    bsp_can_frame_t frame;
+    uint16_t start_id;
+    uint16_t data_id;
+    uint16_t config_id;
+
+    if (transfer_state.active != 0U &&
+        (vibe_millis() - transfer_state.last_fragment_ms) >= SYN_FRAGMENT_TIMEOUT_MS) {
+        uint8_t timed_out_transfer = transfer_state.transfer_id;
+        data_id = node_can_id(CAN_ID_DATA_BASE, node_state.node_id);
+        fail_active_transfer(data_id, timed_out_transfer, SYN_DETAIL_TIMEOUT);
+    }
+
+    while (bsp_can_receive(&frame)) {
+        if (frame.id == CAN_ID_DISCOVERY) {
+            handle_discovery_frame(&frame);
+            continue;
+        }
+        if (node_state.node_id == NODE_ID_UNASSIGNED) {
+            continue;
+        }
+        if (frame.id == CAN_ID_SYNC_CONTROL) {
+            handle_sync_control(&frame);
+        } else {
+            start_id = node_can_id(CAN_ID_START_BASE, node_state.node_id);
+            data_id = node_can_id(CAN_ID_DATA_BASE, node_state.node_id);
+            config_id = node_can_id(CAN_ID_UART_CONFIG_BASE, node_state.node_id);
+            if (frame.id == start_id) {
+                handle_start(&frame, start_id);
+            } else if (frame.id == data_id) {
+                handle_data(&frame, data_id);
+            } else if (frame.id == config_id) {
+                handle_uart_config(&frame, config_id);
+            }
+        }
+    }
+}
+
+void app_setup(void)
+{
+    memset(&node_state, 0, sizeof(node_state));
+    reset_transfer();
+    load_factory_uid();
+    can_ready = bsp_can_init(BSP_CAN_BITRATE_500K);
+    syn_uart_init();
+    if (can_ready != 0U) {
+        heartbeat_task();
+        (void)vibe_task_every_ms(HEARTBEAT_PERIOD_MS, heartbeat_task);
+        (void)vibe_task_every_ms(CAN_POLL_PERIOD_MS, can_command_task);
+        (void)vibe_task_every_ms(CAN_POLL_PERIOD_MS, uart_rx_forward_task);
+    }
+}

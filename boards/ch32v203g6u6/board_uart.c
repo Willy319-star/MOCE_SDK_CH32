@@ -13,7 +13,8 @@ void board_uart_init(uint32_t baudrate)
     GPIO_InitTypeDef gpio = {0};
     USART_InitTypeDef uart = {0};
 
-    RCC_APB2PeriphClockCmd(BOARD_UART_GPIO_CLK | BOARD_UART_CLK, ENABLE);
+    RCC_APB2PeriphClockCmd(BOARD_UART_GPIO_CLK, ENABLE);
+    RCC_APB1PeriphClockCmd(BOARD_UART_CLK, ENABLE);
 
     gpio.GPIO_Pin = BOARD_UART_TX_GPIO_PIN;
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
