@@ -25,9 +25,11 @@ add_subdirectory(user_api)
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/project/${APP}/CMakeLists.txt)
     add_subdirectory(project/${APP})
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/examples_final/${APP}/CMakeLists.txt)
+    add_subdirectory(examples_final/${APP})
 elseif(EXISTS ${CMAKE_SOURCE_DIR}/examples/${APP}/CMakeLists.txt)
     add_subdirectory(examples/${APP})
 else()
-    message(FATAL_ERROR "APP not found in project/${APP} or examples/${APP}")
+    message(FATAL_ERROR "APP not found in project/${APP}, examples/${APP}, or examples_final/${APP}")
 endif()
 

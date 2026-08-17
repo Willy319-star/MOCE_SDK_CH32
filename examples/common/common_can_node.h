@@ -6,8 +6,7 @@
 
 /* ———— device types ———— */
 #define DEVICE_TYPE_I2C      0x01U
-#define DEVICE_TYPE_MOTOR    0x02U
-#define DEVICE_TYPE_SERVO    0x03U
+#define DEVICE_TYPE_SPI      0x03U
 #define DEVICE_TYPE_UART     0x04U
 
 /* ———— CAN ID allocation ———— */
@@ -20,8 +19,6 @@
 
 /* convenience aliases (existing code may use these) */
 #define CAN_ID_I2C_CMD(node_id)      CAN_ID_CMD(node_id)
-#define CAN_ID_MOTOR_CMD(node_id)    CAN_ID_DATA(node_id)
-#define CAN_ID_SERVO_CMD(node_id)    ((uint16_t)(0x400U + (uint16_t)(node_id)))
 
 /* ———— discovery protocol ———— */
 #define DYN_CMD_REQUEST_ID      0xF0U

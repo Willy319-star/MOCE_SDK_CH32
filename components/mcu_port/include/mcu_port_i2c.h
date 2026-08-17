@@ -22,4 +22,9 @@ uint8_t mcu_port_i2c_write(mcu_port_i2c_t *i2c, uint8_t address, const uint8_t *
 uint8_t mcu_port_i2c_write_reg(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t value);
 uint8_t mcu_port_i2c_read_reg(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t *value);
 uint8_t mcu_port_i2c_read_regs(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t *data, uint16_t length);
+uint8_t mcu_port_i2c_write_read(mcu_port_i2c_t *i2c, uint8_t address,
+                                const uint8_t *write_data, uint16_t write_len,
+                                uint8_t *read_data, uint16_t read_len);
+uint8_t mcu_port_i2c_gpio_probe(mcu_port_i2c_t *i2c, uint8_t address,
+                                uint8_t swap_scl_sda);
 

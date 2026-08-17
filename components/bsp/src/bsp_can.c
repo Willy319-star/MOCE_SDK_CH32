@@ -46,9 +46,32 @@ static void can_filter_accept_all(void)
     CAN_FilterInit(&filter);
 }
 
-uint8_t bsp_can_init_50k(void)
+uint8_t bsp_can_init(bsp_can_bitrate_t bitrate)
 {
     uint32_t timeout;
+    uint32_t bit_timing;
+
+    if (bitrate == BSP_CAN_BITRATE_50K) {
+        /* SYSCLK/HCLK=96 MHz and PCLK1=HCLK/2=48 MHz.
+         * 20 tq/bit, prescaler=48 -> 50 kbit/s. */
+        bit_timing = ((uint32_t)CAN_Mode_Normal << 30) |
+                     ((uint32_t)CAN_SJW_1tq << 24) |
+                     ((uint32_t)CAN_BS1_15tq << 16) |
+                     ((uint32_t)CAN_BS2_4tq << 20) |
+                     (48U - 1U);
+    } else if (bitrate == BSP_CAN_BITRATE_500K) {
+        /* SYSCLK/HCLK=96 MHz and PCLK1=HCLK/2=48 MHz.
+         * 16 tq/bit, prescaler=6 -> 500 kbit/s,
+         * sample point=(1+13)/16=87.5%. */
+        bit_timing = ((uint32_t)CAN_Mode_Normal << 30) |
+                     ((uint32_t)CAN_SJW_1tq << 24) |
+                     ((uint32_t)CAN_BS1_13tq << 16) |
+                     ((uint32_t)CAN_BS2_2tq << 20) |
+                     (6U - 1U);
+    } else {
+        can_init_stage = 4U;
+        return 0U;
+    }
 
     can_init_stage = 0U;
     can_gpio_init();
@@ -76,11 +99,7 @@ uint8_t bsp_can_init_50k(void)
                                             CAN_CTLR_TXFP);
     BOARD_CAN_INSTANCE->CTLR |= CAN_CTLR_ABOM;
 
-    BOARD_CAN_INSTANCE->BTIMR = ((uint32_t)CAN_Mode_Normal << 30) |
-                                ((uint32_t)CAN_SJW_1tq << 24) |
-                                ((uint32_t)CAN_BS1_15tq << 16) |
-                                ((uint32_t)CAN_BS2_4tq << 20) |
-                                (48U - 1U);
+    BOARD_CAN_INSTANCE->BTIMR = bit_timing;
 
     BOARD_CAN_INSTANCE->CTLR &= ~(uint32_t)CAN_CTLR_INRQ;
 
@@ -98,6 +117,11 @@ uint8_t bsp_can_init_50k(void)
     can_filter_accept_all();
     can_init_stage = 3U;
     return 1U;
+}
+
+uint8_t bsp_can_init_50k(void)
+{
+    return bsp_can_init(BSP_CAN_BITRATE_50K);
 }
 
 uint8_t bsp_can_send_std(uint16_t id, const uint8_t *data, uint8_t len)

@@ -1,6 +1,8 @@
 add_executable(${APP}.elf main.c)
 
-target_include_directories(${APP}.elf PRIVATE ${CMAKE_SOURCE_DIR}/examples_final/common)
+target_include_directories(${APP}.elf PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/common
+)
 target_link_libraries(${APP}.elf PRIVATE
     -Wl,--whole-archive
     board_${BOARD}

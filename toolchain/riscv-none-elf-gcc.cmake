@@ -17,11 +17,32 @@ else()
         set(TOOLCHAIN_PREFIX riscv-none-elf)
     endif()
 
-    set(CMAKE_C_COMPILER ${TOOLCHAIN_PREFIX}-gcc)
-    set(CMAKE_ASM_COMPILER ${TOOLCHAIN_PREFIX}-gcc)
-    set(CMAKE_OBJCOPY ${TOOLCHAIN_PREFIX}-objcopy)
-    set(CMAKE_SIZE ${TOOLCHAIN_PREFIX}-size)
-    set(CMAKE_GDB ${TOOLCHAIN_PREFIX}-gdb)
+    find_program(RISCV_GCC_FROM_PATH
+        NAMES ${TOOLCHAIN_PREFIX}-gcc
+        NO_CACHE
+    )
+    if(RISCV_GCC_FROM_PATH)
+        get_filename_component(RISCV_TOOLCHAIN_BIN
+            "${RISCV_GCC_FROM_PATH}" DIRECTORY)
+        set(TOOLCHAIN_PREFIX "${RISCV_TOOLCHAIN_BIN}/riscv-none-elf")
+    endif()
+
+    if(CMAKE_HOST_WIN32)
+        set(TOOLCHAIN_EXECUTABLE_SUFFIX ".exe")
+    else()
+        set(TOOLCHAIN_EXECUTABLE_SUFFIX "")
+    endif()
+
+    set(CMAKE_C_COMPILER
+        "${TOOLCHAIN_PREFIX}-gcc${TOOLCHAIN_EXECUTABLE_SUFFIX}")
+    set(CMAKE_ASM_COMPILER
+        "${TOOLCHAIN_PREFIX}-gcc${TOOLCHAIN_EXECUTABLE_SUFFIX}")
+    set(CMAKE_OBJCOPY
+        "${TOOLCHAIN_PREFIX}-objcopy${TOOLCHAIN_EXECUTABLE_SUFFIX}")
+    set(CMAKE_SIZE
+        "${TOOLCHAIN_PREFIX}-size${TOOLCHAIN_EXECUTABLE_SUFFIX}")
+    set(CMAKE_GDB
+        "${TOOLCHAIN_PREFIX}-gdb${TOOLCHAIN_EXECUTABLE_SUFFIX}")
 endif()
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

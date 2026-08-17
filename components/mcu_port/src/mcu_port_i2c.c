@@ -373,6 +373,107 @@ uint8_t mcu_port_i2c_read_regs(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg
     return 1U;
 }
 
+uint8_t mcu_port_i2c_write_read(mcu_port_i2c_t *i2c, uint8_t address,
+                                const uint8_t *write_data, uint16_t write_len,
+                                uint8_t *read_data, uint16_t read_len)
+{
+    uint16_t i;
+
+    if (i2c == 0 || write_data == 0 || write_len == 0U ||
+        read_data == 0 || read_len == 0U || !i2c_prepare_bus(i2c)) {
+        return 0U;
+    }
+
+    I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
+    I2C_GenerateSTART(i2c->i2c, ENABLE);
+    if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT)) goto fail;
+    I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Transmitter);
+    if (!wait_addr_ack_or_nack(i2c->i2c)) goto fail;
+    for (i = 0U; i < write_len; ++i) {
+        I2C_SendData(i2c->i2c, write_data[i]);
+        if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) goto fail;
+    }
+    I2C_GenerateSTART(i2c->i2c, ENABLE);
+    if (!wait_event(i2c->i2c, I2C_EVENT_MASTER_MODE_SELECT)) goto fail;
+    I2C_Send7bitAddress(i2c->i2c, (uint8_t)(address << 1), I2C_Direction_Receiver);
+    if (!wait_addr_ack_or_nack(i2c->i2c)) goto fail;
+
+    if (read_len == 1U) {
+        I2C_AcknowledgeConfig(i2c->i2c, DISABLE);
+        I2C_GenerateSTOP(i2c->i2c, ENABLE);
+        if (!wait_flag_set(i2c->i2c, I2C_FLAG_RXNE)) goto fail;
+        read_data[0] = I2C_ReceiveData(i2c->i2c);
+    } else {
+        for (i = 0U; i < read_len; ++i) {
+            if (i == (uint16_t)(read_len - 1U)) {
+                I2C_AcknowledgeConfig(i2c->i2c, DISABLE);
+                I2C_GenerateSTOP(i2c->i2c, ENABLE);
+            }
+            if (!wait_flag_set(i2c->i2c, I2C_FLAG_RXNE)) goto fail;
+            read_data[i] = I2C_ReceiveData(i2c->i2c);
+        }
+    }
+    I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
+    return 1U;
+
+fail:
+    I2C_AcknowledgeConfig(i2c->i2c, ENABLE);
+    i2c_stop_and_clear_error(i2c->i2c);
+    return 0U;
+}
+
+static void gpio_i2c_delay(void)
+{
+    volatile uint32_t index;
+    for (index = 0U; index < 300U; ++index) {
+        __asm volatile ("nop");
+    }
+}
+
+uint8_t mcu_port_i2c_gpio_probe(mcu_port_i2c_t *i2c, uint8_t address,
+                                uint8_t swap_scl_sda)
+{
+    GPIO_InitTypeDef gpio = {0};
+    uint16_t scl_pin;
+    uint16_t sda_pin;
+    uint8_t value;
+    uint8_t ack;
+
+    if (i2c == 0 || address > 0x7FU) return 0U;
+    scl_pin = swap_scl_sda ? i2c->sda_pin : i2c->scl_pin;
+    sda_pin = swap_scl_sda ? i2c->scl_pin : i2c->sda_pin;
+    I2C_Cmd(i2c->i2c, DISABLE);
+    I2C_DeInit(i2c->i2c);
+    gpio.GPIO_Mode = GPIO_Mode_Out_OD;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio.GPIO_Pin = scl_pin; GPIO_Init(i2c->scl_port, &gpio);
+    gpio.GPIO_Pin = sda_pin; GPIO_Init(i2c->sda_port, &gpio);
+    GPIO_SetBits(i2c->scl_port, scl_pin);
+    GPIO_SetBits(i2c->sda_port, sda_pin);
+    gpio_i2c_delay();
+    GPIO_ResetBits(i2c->sda_port, sda_pin);
+    gpio_i2c_delay();
+    GPIO_ResetBits(i2c->scl_port, scl_pin);
+    value = (uint8_t)(address << 1U);
+    for (uint8_t bit = 0U; bit < 8U; ++bit) {
+        if ((value & 0x80U) != 0U) GPIO_SetBits(i2c->sda_port, sda_pin);
+        else GPIO_ResetBits(i2c->sda_port, sda_pin);
+        gpio_i2c_delay();
+        GPIO_SetBits(i2c->scl_port, scl_pin); gpio_i2c_delay();
+        GPIO_ResetBits(i2c->scl_port, scl_pin); value <<= 1U;
+    }
+    GPIO_SetBits(i2c->sda_port, sda_pin); gpio_i2c_delay();
+    GPIO_SetBits(i2c->scl_port, scl_pin); gpio_i2c_delay();
+    ack = GPIO_ReadInputDataBit(i2c->sda_port, sda_pin) == Bit_RESET;
+    GPIO_ResetBits(i2c->scl_port, scl_pin);
+    GPIO_ResetBits(i2c->sda_port, sda_pin); gpio_i2c_delay();
+    GPIO_SetBits(i2c->scl_port, scl_pin); gpio_i2c_delay();
+    GPIO_SetBits(i2c->sda_port, sda_pin);
+    i2c->initialized = 0U;
+    (void)mcu_port_i2c_init(i2c);
+    return ack;
+}
+
 uint8_t mcu_port_i2c_read_reg(mcu_port_i2c_t *i2c, uint8_t address, uint8_t reg, uint8_t *value)
 {
     if (value == 0) {

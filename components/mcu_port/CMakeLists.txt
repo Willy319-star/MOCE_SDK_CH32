@@ -1,6 +1,7 @@
 add_library(mcu_port STATIC
     src/mcu_port_gpio.c
     src/mcu_port_i2c.c
+    src/mcu_port_spi.c
     src/mcu_port_time.c
     src/mcu_port_uart.c
 )
